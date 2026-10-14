@@ -1,98 +1,77 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useEffect, useState } from "react";
+import KioskStartPage from "./KioskStartPage";
+import LoginPage from "./LoginPage";
+import OrderingScreen from "./OrderingScreen";
+import SettlementSuccessScreen from "./SettlementSuccessScreen";
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+type ScreenState = "login" | "start" | "ordering" | "settlement_success";
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
+export default function Index() {
+  const [currentPage, setCurrentPage] = useState<ScreenState>("login");
+  const [completedOrderId, setCompletedOrderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Initial launch: always display the login screen first.
+    // If there is an active kiosk order in progress, clear or allow clean login.
+    const checkSession = async () => {
+      try {
+        const storedKioskOrder = await AsyncStorage.getItem("kioskOrderId");
+        if (storedKioskOrder) {
+          // If a kiosk order was abandoned or in progress, keep state clean for fresh login
+          await AsyncStorage.removeItem("kioskOrderId");
+        }
+      } catch (err) {
+        console.error("Error checking initial session:", err);
+      }
+    };
+    checkSession();
+  }, []);
+
+  if (currentPage === "settlement_success") {
     return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
+      <SettlementSuccessScreen
+        orderId={completedOrderId}
+        onReturnToOrder={() => {
+          setCompletedOrderId(null);
+          setCurrentPage("start");
+        }}
+      />
     );
   }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
+
+  if (currentPage === "ordering") {
+    return (
+      <OrderingScreen
+        onOrderCompleted={(orderId) => {
+          setCompletedOrderId(orderId);
+          setCurrentPage("settlement_success");
+        }}
+        onLogout={() => {
+          setCurrentPage("login");
+        }}
+      />
+    );
+  }
+
+  if (currentPage === "start") {
+    return (
+      <KioskStartPage
+        onStart={(user, selectedTable) => {
+          console.log("Kiosk session started for user:", user, selectedTable);
+          setCurrentPage("ordering");
+        }}
+        onBackToLogin={() => setCurrentPage("login")}
+      />
+    );
+  }
+
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
+    <LoginPage
+      onLoginSuccess={() => {
+        setCurrentPage("start");
+      }}
+    />
   );
 }
 
-export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
-
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
-
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
-  },
-});

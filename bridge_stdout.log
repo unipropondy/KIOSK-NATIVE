@@ -1,0 +1,14 @@
+
+[INFO] [2026-10-13T11:17:08.869Z] Loaded configurations successfully from: C:\Users\faiza\AppData\Roaming\unipro-print-bridge\config.json
+[INFO] [2026-10-13T11:17:09.010Z] [Electron] Platform ready. Starting services...
+[INFO] [2026-10-13T11:17:09.016Z] UniPro Print Bridge server listening locally on port 3050
+[INFO] [2026-10-13T11:17:09.018Z] Initializing UniPro Print Bridge Poller...
+[INFO] [2026-10-13T11:17:09.021Z] Found 3 configured backend(s). Initializing startup authentication...
+[INFO] [2026-10-13T11:17:09.023Z] [RN POS] Authenticating bridge against backend: https://kiosk-app-production-511f.up.railway.app
+[INFO] [2026-10-13T11:17:09.068Z] [QR POS] Authenticating bridge against backend: https://online-qr-production.up.railway.app
+[INFO] [2026-10-13T11:17:09.072Z] [ISLAND CAR WASH] Authenticating bridge against backend: https://smokedb-demo-production.up.railway.app
+[INFO] [2026-10-13T11:17:09.075Z] [DisplayStateStore] Successfully loaded persisted customer display state.
+[INFO] [2026-10-13T11:17:09.077Z] [Monitor] Screen watcher initialized.
+[INFO] [2026-10-13T11:17:09.295Z] [RN POS] Successfully authenticated on startup.
+[INFO] [2026-10-13T11:17:09.366Z] [QR POS] Successfully authenticated on startup.
+[INFO] [2026-10-13T11:17:09.427Z] [ISLAND CAR WASH] Successfully authenticated on startup.
