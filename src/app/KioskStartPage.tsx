@@ -125,32 +125,21 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
   };
 
 
-  // Choose Service (CAR_WASH / DETAILING) -> get service tables
+  // Choose Service (CAR_WASH / DETAILING) -> Start Kiosk session
   const chooseService = async (orderType: string) => {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch(`${API}/order/kiosk/tables`);
-      const data = await readJsonResponse(res);
-
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Unable to load service tables.");
-      }
-      if (!Array.isArray(data.tables) || data.tables.length === 0) {
-        throw new Error("No available service tables found.");
-      }
-
-      const selectedTable = data.tables[0];
-      await handleStart(orderType, selectedTable);
+      await handleStart(orderType);
     } catch (err: any) {
-      setError(err?.message || "Unable to load service tables.");
+      setError(err?.message || "Unable to start service.");
     } finally {
       setLoading(false);
     }
   };
 
-  // Start Kiosk order with table and session
-  const handleStart = async (orderType: string, table: any) => {
+  // Start Kiosk order session
+  const handleStart = async (orderType: string) => {
     setError("");
     try {
       const res = await fetch(`${API}/order/kiosk/start`, {
@@ -158,8 +147,6 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           orderType,
-          tableId: table.TableId,
-          tableNo: table.TableNo,
         }),
       });
 
@@ -169,11 +156,11 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
         throw new Error(data.error || "Unable to start Kiosk session. Please try again.");
       }
 
-      // Store the selected service table for the next screen
+      // Store the kiosk session info for the ordering screen
       await AsyncStorage.setItem("kioskOrderId", String(data.orderNumber || ""));
       await AsyncStorage.setItem("kioskOrderType", orderType);
-      await AsyncStorage.setItem("tableId", String(table.TableId || ""));
-      await AsyncStorage.setItem("tableNo", String(table.TableNo || ""));
+      await AsyncStorage.setItem("tableId", "");
+      await AsyncStorage.setItem("tableNo", orderType);
       await AsyncStorage.multiRemove(["orderId", "returnToKioskStart"]);
 
       let currentUser = null;
@@ -194,7 +181,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
       await AsyncStorage.setItem("qr_pos_user", JSON.stringify(guestUser));
 
       if (onStart) {
-        onStart(guestUser, { tableId: table.TableId, tableNo: table.TableNo });
+        onStart(guestUser, { tableId: "", tableNo: orderType });
       }
     } catch (err: any) {
       setError(err?.message || "Something went wrong. Please try again.");
