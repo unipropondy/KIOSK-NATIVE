@@ -5,8 +5,7 @@ const sql = require("mssql");
 const { poolPromise } = require("../config/db");
 const {
   generateAndQueueKOTs,
-  generateAndQueueReceipt,
-  reprintKOT
+  generateAndQueueReceipt
 } = require("../utils/printHelper");
 const DEFAULT_GUID = "00000000-0000-0000-0000-000000000000";
 
@@ -80,54 +79,25 @@ async function getOrGenerateOrderId(req, tableId) {
     let dailySequence = 1;
 
     // 3. ATOMIC ATTEMPT: Use MERGE or Transaction for Sequence
-    // Ensure the row exists first (non-destructive insert)
-    await pool.request()
+    const seqResult = await pool.request()
       .input("RestId", sql.UniqueIdentifier, String(cachedBusinessUnitId))
       .input("Today", sql.Date, todayStr)
       .query(`
-        IF NOT EXISTS (SELECT 1 FROM OrderSequences WHERE RestaurantId = @RestId AND SequenceDate = @Today AND ISNULL(SequenceType,'DEFAULT') = 'DEFAULT')
+        BEGIN TRANSACTION;
+        IF NOT EXISTS (SELECT 1 FROM OrderSequences WHERE RestaurantId = @RestId AND SequenceDate = @Today)
         BEGIN
-          INSERT INTO OrderSequences (RestaurantId, SequenceDate, LastNumber) VALUES (@RestId, @Today, 0);
+            INSERT INTO OrderSequences (RestaurantId, SequenceDate, LastNumber) VALUES (@RestId, @Today, 0);
         END
+        UPDATE OrderSequences SET LastNumber = LastNumber + 1 OUTPUT INSERTED.LastNumber
+        WHERE RestaurantId = @RestId AND SequenceDate = @Today;
+        COMMIT TRANSACTION;
       `);
 
-    // 4. Loop: increment sequence and check uniqueness against RestaurantOrderCur
-    let displayOrderId;
-    const MAX_ATTEMPTS = 200;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      // Atomically increment and get the new sequence number
-      const seqResult = await pool.request()
-        .input("RestId", sql.UniqueIdentifier, String(cachedBusinessUnitId))
-        .input("Today", sql.Date, todayStr)
-        .query(`
-          BEGIN TRANSACTION;
-          UPDATE OrderSequences SET LastNumber = LastNumber + 1 OUTPUT INSERTED.LastNumber
-          WHERE RestaurantId = @RestId AND SequenceDate = @Today
-            AND ISNULL(SequenceType, 'DEFAULT') = 'DEFAULT';
-          COMMIT TRANSACTION;
-        `);
+    dailySequence = seqResult.recordset[0]?.LastNumber || 1;
 
-      dailySequence = seqResult.recordset[0]?.LastNumber || 1;
-      const candidate = `${datePrefix}-${String(dailySequence).padStart(4, '0')}`;
+    const displayOrderId = `${datePrefix}-${String(dailySequence).padStart(4, '0')}`;
 
-      // Check whether this OrderNumber already exists in RestaurantOrderCur
-      const dupCheck = await pool.request()
-        .input("orderNo", sql.NVarChar(50), candidate)
-        .query("SELECT TOP 1 1 AS Found FROM RestaurantOrderCur WHERE OrderNumber = @orderNo");
-
-      if (dupCheck.recordset.length === 0) {
-        // This number is free — use it
-        displayOrderId = candidate;
-        break;
-      }
-      console.warn(`[getOrGenerateOrderId] ${candidate} already exists in RestaurantOrderCur, skipping (attempt ${attempt + 1})`);
-    }
-
-    if (!displayOrderId) {
-      throw new Error("[getOrGenerateOrderId] Could not find a unique OrderId after maximum attempts.");
-    }
-
-    // 5. Atomic Update of Table Status
+    // 4. Atomic Update of Table Status
     await pool.request()
       .input("tid", sql.UniqueIdentifier, cleanId)
       .input("oid", sql.NVarChar(50), displayOrderId)
@@ -146,157 +116,15 @@ async function getOrGenerateOrderId(req, tableId) {
 }
 
 /**
- * Generate next sequential Kiosk Order Number (concurrency-safe).
- * Uses an ATOMIC SQL transaction on OrderSequences table with SequenceType='KIOSK'.
- * Format: 0001, 0002, 0003 ... resets daily.
- */
-let cachedKioskBusinessUnitId = null;
-
-async function generateKioskOrderNumber() {
-  const pool = await poolPromise;
-
-  // Cache BusinessUnitId
-  if (!cachedKioskBusinessUnitId) {
-    const bizRow = await pool.request().query(
-      "SELECT TOP 1 BusinessUnitId FROM [dbo].[RestaurantOrderCur] WHERE BusinessUnitId IS NOT NULL AND BusinessUnitId <> '00000000-0000-0000-0000-000000000000'"
-    );
-    cachedKioskBusinessUnitId = bizRow.recordset.length > 0
-      ? bizRow.recordset[0].BusinessUnitId
-      : DEFAULT_GUID;
-  }
-
-  const istDate = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000));
-  const todayStr = istDate.toISOString().split('T')[0];
-
-  try {
-    // ATOMIC: ensure the KIOSK sequence row exists for today.
-    await pool.request()
-      .input("RestId", sql.UniqueIdentifier, cachedKioskBusinessUnitId)
-      .input("Today", sql.Date, todayStr)
-      .query(`
-        IF NOT EXISTS (
-          SELECT 1 FROM OrderSequences
-          WHERE RestaurantId = @RestId AND SequenceDate = @Today
-            AND ISNULL(SequenceType, 'DEFAULT') = 'KIOSK'
-        )
-        BEGIN
-          INSERT INTO OrderSequences (RestaurantId, SequenceDate, LastNumber, SequenceType)
-          VALUES (@RestId, @Today, 0, 'KIOSK');
-        END;
-      `);
-
-    // Loop: atomically increment, then verify uniqueness in RestaurantOrderCur.
-    // If the candidate already exists, increment again until a free number is found.
-    const MAX_ATTEMPTS = 200;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      const seqResult = await pool.request()
-        .input("RestId", sql.UniqueIdentifier, cachedKioskBusinessUnitId)
-        .input("Today", sql.Date, todayStr)
-        .query(`
-          BEGIN TRANSACTION;
-          UPDATE OrderSequences
-            SET LastNumber = LastNumber + 1
-            OUTPUT INSERTED.LastNumber
-          WHERE RestaurantId = @RestId
-            AND SequenceDate = @Today
-            AND ISNULL(SequenceType, 'DEFAULT') = 'KIOSK';
-          COMMIT TRANSACTION;
-        `);
-
-      const seq = seqResult.recordset[0]?.LastNumber || 1;
-      const candidate = String(seq).padStart(4, '0');
-
-      // Check whether this OrderNumber already exists in RestaurantOrderCur
-      const dupCheck = await pool.request()
-        .input("orderNo", sql.NVarChar(50), candidate)
-        .query("SELECT TOP 1 1 AS Found FROM RestaurantOrderCur WHERE OrderNumber = @orderNo");
-
-      if (dupCheck.recordset.length === 0) {
-        // Number is free — return it
-        return candidate;
-      }
-      console.warn(`[Kiosk] OrderNumber ${candidate} already exists in RestaurantOrderCur, skipping (attempt ${attempt + 1})`);
-    }
-
-    throw new Error("[Kiosk] Could not find a unique OrderNumber after maximum attempts.");
-
-  } catch (seqErr) {
-    console.warn("[Kiosk] OrderSequences path failed, using fallback table:", seqErr.message);
-
-    // Fallback: dedicated KioskOrderSequences table
-    try {
-      await pool.request().query(`
-        IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'KioskOrderSequences')
-        BEGIN
-          CREATE TABLE KioskOrderSequences (
-            SequenceDate DATE NOT NULL,
-            LastNumber INT NOT NULL DEFAULT 0,
-            PRIMARY KEY (SequenceDate)
-          );
-        END
-      `);
-
-      // Ensure today's row exists
-      await pool.request()
-        .input("Today", sql.Date, todayStr)
-        .query(`
-          IF NOT EXISTS (SELECT 1 FROM KioskOrderSequences WHERE SequenceDate = @Today)
-          BEGIN
-            INSERT INTO KioskOrderSequences (SequenceDate, LastNumber) VALUES (@Today, 0);
-          END;
-        `);
-
-      // Loop: increment + uniqueness check (same pattern as primary path)
-      const MAX_FALLBACK_ATTEMPTS = 200;
-      for (let attempt = 0; attempt < MAX_FALLBACK_ATTEMPTS; attempt++) {
-        const fallbackResult = await pool.request()
-          .input("Today", sql.Date, todayStr)
-          .query(`
-            BEGIN TRANSACTION;
-            UPDATE KioskOrderSequences
-              SET LastNumber = LastNumber + 1
-              OUTPUT INSERTED.LastNumber
-            WHERE SequenceDate = @Today;
-            COMMIT TRANSACTION;
-          `);
-
-        const seq = fallbackResult.recordset[0]?.LastNumber || 1;
-        const candidate = String(seq).padStart(4, '0');
-
-        // Check uniqueness
-        const dupCheck = await pool.request()
-          .input("orderNo", sql.NVarChar(50), candidate)
-          .query("SELECT TOP 1 1 AS Found FROM RestaurantOrderCur WHERE OrderNumber = @orderNo");
-
-        if (dupCheck.recordset.length === 0) {
-          return candidate;
-        }
-        console.warn(`[Kiosk-Fallback] OrderNumber ${candidate} already exists, skipping (attempt ${attempt + 1})`);
-      }
-
-      throw new Error("[Kiosk-Fallback] Could not find a unique OrderNumber after maximum attempts.");
-
-    } catch (fallbackErr) {
-      console.error("[Kiosk] Emergency fallback for order number:", fallbackErr.message);
-      // Last resort: timestamp-based unique number (still format-compatible)
-      return String(Date.now()).slice(-4).padStart(4, '0');
-    }
-  }
-}
-
-/**
  * Professional Table Sync Helper
  * Syncs CartItems to RestaurantOrderCur and RestaurantOrderDetailCur
  */
-async function syncToProfessionalTables(transaction, tableId, displayOrderId, items, userId, kioskOrderType) {
-  const isKioskOrder = (!tableId || tableId === "undefined" || tableId === "null");
-  const cleanTableId = isKioskOrder ? null : String(tableId).replace(/^\{|\}$/g, "").trim();
+async function syncToProfessionalTables(transaction, tableId, displayOrderId, items, userId) {
+  const isTakeaway = (!tableId || tableId === "undefined" || tableId === "null");
+  const cleanTableId = isTakeaway ? null : String(tableId).replace(/^\{|\}$/g, "").trim();
   const cleanOrderNo = String(displayOrderId || "PENDING").replace(/^\{|\}$/g, "").trim();
 
-  // For Kiosk orders: always use 'KIOSK' as the table name — never 'TAKEAWAY'.
-  // This prevents accidental matching against real TAKEAWAY table orders.
-  // We use KIOSK-EATIN to distinguish EAT_IN for KOT printing.
-  let actualTableNo = isKioskOrder ? (kioskOrderType === "EAT_IN" ? "KIOSK-IN" : "KIOSK") : "TAKEAWAY";
+  let actualTableNo = "TAKEAWAY";
   if (cleanTableId) {
     const tCheck = await transaction.request()
       .input("tid", sql.VarChar(50), cleanTableId)
@@ -313,76 +141,44 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
   if (!finalUserId || finalUserId.length < 10) finalUserId = DEFAULT_GUID;
 
   let orderGuid;
+  // 🛡️ STRICT LOOKUP: Prioritize OrderNumber first, then most recent active table order
+  const headerCheck = await transaction.request()
+    .input("orderNo", sql.NVarChar(50), cleanOrderNo)
+    .input("tableNo", sql.VarChar(20), actualTableNo)
+    .query(`
+      SELECT TOP 1 OrderId FROM RestaurantOrderCur WITH (UPDLOCK)
+      WHERE OrderNumber = @orderNo 
+      OR (LTRIM(RTRIM(Tableno)) = LTRIM(RTRIM(@tableNo)) AND (isOrderClosed = 0 OR isOrderClosed IS NULL)) 
+      ORDER BY CreatedOn DESC
+    `);
 
-  if (isKioskOrder) {
-    // ─── KIOSK: Look up STRICTLY by OrderNumber only.
-    // Never use Tableno='KIOSK' as a fallback — every kiosk order gets its own unique number.
-    const headerCheck = await transaction.request()
+  if (headerCheck.recordset.length > 0) {
+    orderGuid = headerCheck.recordset[0].OrderId;
+    // Ensure the OrderNumber is synced to the professional one if it was a draft (TEMP-, PENDING, etc)
+    await transaction.request()
+      .input("orderId", sql.UniqueIdentifier, orderGuid)
       .input("orderNo", sql.NVarChar(50), cleanOrderNo)
       .query(`
-        SELECT TOP 1 OrderId FROM RestaurantOrderCur WITH (UPDLOCK)
-        WHERE OrderNumber = @orderNo
-        ORDER BY CreatedOn DESC
+        UPDATE RestaurantOrderCur 
+        SET OrderNumber = @orderNo 
+        WHERE OrderId = @orderId 
+        AND (OrderNumber IS NULL OR OrderNumber = '' OR OrderNumber = 'PENDING' OR OrderNumber = 'NEW' OR OrderNumber = '#NEW' OR OrderNumber LIKE 'TEMP-%')
       `);
-
-    if (headerCheck.recordset.length > 0) {
-      orderGuid = headerCheck.recordset[0].OrderId;
-      console.log(`[Kiosk] Re-using existing order header for OrderNumber=${cleanOrderNo}, OrderId=${orderGuid}`);
-    } else {
-      // Insert brand-new order header with the kiosk sequence number
-      orderGuid = require("crypto").randomUUID();
-      console.log(`[Kiosk] Creating new order header: OrderNumber=${cleanOrderNo}, Tableno=KIOSK, OrderId=${orderGuid}`);
-      await transaction.request()
-        .input("orderId", sql.UniqueIdentifier, orderGuid)
-        .input("orderNo", sql.NVarChar(50), cleanOrderNo)
-        .input("tableNo", sql.VarChar(20), actualTableNo)
-        .input("userId", sql.UniqueIdentifier, toGuidOrNull(finalUserId) || DEFAULT_GUID)
-        .input("bizId", sql.UniqueIdentifier, bizId)
-        .query(`
-          INSERT INTO RestaurantOrderCur
-            (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, entry_Status)
-          VALUES
-            (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, 'q')
-        `);
-    }
   } else {
-    // ─── TABLE MODE: Prioritize OrderNumber, then fall back to active table match
-    const headerCheck = await transaction.request()
-      .input("orderNo", sql.NVarChar(50), cleanOrderNo)
-      .input("tableNo", sql.VarChar(20), actualTableNo)
-      .query(`
-        SELECT TOP 1 OrderId FROM RestaurantOrderCur WITH (UPDLOCK)
-        WHERE OrderNumber = @orderNo
-        OR (LTRIM(RTRIM(Tableno)) = LTRIM(RTRIM(@tableNo)) AND (isOrderClosed = 0 OR isOrderClosed IS NULL))
-        ORDER BY CreatedOn DESC
-      `);
-
-    if (headerCheck.recordset.length > 0) {
-      orderGuid = headerCheck.recordset[0].OrderId;
-      // Sync OrderNumber if the header was created as a draft
-      await transaction.request()
-        .input("orderId", sql.UniqueIdentifier, orderGuid)
-        .input("orderNo", sql.NVarChar(50), cleanOrderNo)
-        .query(`
-          UPDATE RestaurantOrderCur
-          SET OrderNumber = @orderNo
-          WHERE OrderId = @orderId
-          AND (OrderNumber IS NULL OR OrderNumber = '' OR OrderNumber = 'PENDING' OR OrderNumber = 'NEW' OR OrderNumber = '#NEW' OR OrderNumber LIKE 'TEMP-%')
-        `);
-    } else {
-      orderGuid = require("crypto").randomUUID();
-      await transaction.request()
-        .input("orderId", sql.UniqueIdentifier, orderGuid)
-        .input("orderNo", sql.NVarChar(50), cleanOrderNo)
-        .input("tableNo", sql.VarChar(20), actualTableNo)
-        .input("userId", sql.UniqueIdentifier, toGuidOrNull(finalUserId) || DEFAULT_GUID)
-        .input("bizId", sql.UniqueIdentifier, bizId)
-        .input("entry_Status", sql.NVarChar(20), "q")
-        .query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, entry_Status) VALUES (@orderId, @orderNo, GETDATE(), LTRIM(RTRIM(@tableNo)), 1, @userId, GETDATE(), 0, @bizId, 'q')");
-    }
+    orderGuid = require("crypto").randomUUID();
+    await transaction.request().input("orderId", sql.UniqueIdentifier, orderGuid).input("orderNo", sql.NVarChar(50), cleanOrderNo).input("tableNo", sql.VarChar(20), actualTableNo).input(
+      "userId",
+      sql.UniqueIdentifier,
+      toGuidOrNull(finalUserId) || DEFAULT_GUID
+    )
+      .input("bizId", sql.UniqueIdentifier, bizId)
+      .input("entry_Status", sql.NVarChar(20), "q")
+      .query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId,entry_Status, start_date) VALUES (@orderId, @orderNo, GETDATE(), LTRIM(RTRIM(@tableNo)), 1, @userId, GETDATE(), 0, @bizId, 'q', (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))");
   }
+
   for (const item of items) {
-    const cleanProdId = String(item.id || item.ProductId || DEFAULT_GUID).replace(/^\{|\}$/g, "").trim();
+    const rawProdId = item.DishId || item.dishId || item.id || item.ProductId || DEFAULT_GUID;
+    const cleanProdId = String(rawProdId).replace(/^\{|\}$/g, "").trim();
     let finalProdId = cleanProdId;
     if (finalProdId.length < 10) finalProdId = DEFAULT_GUID;
 
@@ -390,9 +186,9 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     const statusCodes = { 'NEW': 1, 'SENT': 2, 'READY': 3, 'SERVED': 4, 'HOLD': 5, 'VOIDED': 0 };
     const currentStatusCode = statusCodes[item.status || item.Status] || 2;
     const dishName = String(
-      item.name || item.ProductName || "Dish"
+      item.DishName || item.dishName || item.Name || item.name || item.ProductName || "Dish"
     ).substring(0, 50);
-    const unitPrice = item.price || item.Cost || 0;
+    const unitPrice = Number(item.Price ?? item.price ?? item.finalPrice ?? item.Cost ?? 0);
     const noteInfo = resolveItemNote(item);
     const takeawayInfo = resolveItemTakeaway(item);
     const modsJSON = JSON.stringify(item.modifiers || []).substring(0, 500);
@@ -442,64 +238,42 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
         .input("mods", sql.NVarChar(sql.MAX), modsJSON)
         .input("combo", sql.NVarChar(sql.MAX), comboDetailsJSON)
         .query(`
-          SELECT TOP 1 OrderDetailId, StatusCode
+          SELECT TOP 1 OrderDetailId
           FROM RestaurantOrderDetailCur
           WHERE OrderId = @orderId
             AND DishId = @dishId
             AND ISNULL(CAST(ModifiersJSON AS NVARCHAR(MAX)), '') =
                 ISNULL(@mods, '')
                 AND ISNULL(CAST(ComboDetailsJSON AS NVARCHAR(MAX)), '') = ISNULL(@combo, '')
-            AND StatusCode NOT IN (0)  -- Match ANY non-voided item including already-sent (StatusCode=2)
+            AND StatusCode NOT IN (2,3,4)
           ORDER BY CreatedOn DESC
         `);
 
-      console.log("========== MATCH CHECK ==========");
-      console.log("Dish :", finalProdId);
-      console.log("Mods :", modsJSON);
-      console.log("Combo :", comboDetailsJSON);
-      console.log("Found :", matchCheck.recordset);
-
       if (matchCheck.recordset.length > 0) {
-        const matchedStatus = matchCheck.recordset[0].StatusCode;
-        if (matchedStatus === 2) {
-          // ✅ Already SENT to kitchen → INSERT a brand-new record for this additional order
-          console.log(`[syncToProfessionalTables] Dish '${item.name}' matched a StatusCode=2 record. Forcing NEW INSERT.`);
-          lineItemId = crypto.randomUUID();
-        } else if (matchedStatus === 1) {
-          // ✅ Still a draft (StatusCode=1) → reuse existing ID so it UPDATEs in place
-          lineItemId = matchCheck.recordset[0].OrderDetailId;
-        } else {
-          // StatusCode 3=READY, 4=SERVED → treat as completed, insert new
-          lineItemId = crypto.randomUUID();
-        }
+        lineItemId = matchCheck.recordset[0].OrderDetailId;
       } else {
         lineItemId = crypto.randomUUID();
       }
     }
+    // const comboDetailsJSON = JSON.stringify(item.comboSelections || []).substring(0, 4000);
 
     console.log("MATCH LINEITEM:", lineItemId);
     console.log("ITEM:", item.name);
     console.log("COMBO:", comboDetailsJSON);
     console.log("QTY:", item.qty);
-    console.log("LINE ITEM ID:", lineItemId);
-
 
     const detailCheck = await transaction.request().input("detailId", sql.UniqueIdentifier, lineItemId).query("SELECT OrderDetailId,StatusCode FROM RestaurantOrderDetailCur WHERE OrderDetailId = @detailId");
-    console.log("DETAIL CHECK:", detailCheck.recordset);
     if (detailCheck.recordset.length > 0) {
-      const existingStatus = detailCheck.recordset[0].StatusCode;
-      // StatusCode 3=READY, 4=SERVED → skip, these are final.
-      if (existingStatus === 3 || existingStatus === 4) {
-        console.log(`[syncToProfessionalTables] SKIP item '${item.name}': already at StatusCode=${existingStatus} (READY/SERVED), will not re-print.`);
-        continue;
-      }
-      // StatusCode 0=VOIDED, 1=NEW, 5=HOLD → update is OK
-      if (existingStatus !== 4 && existingStatus !== 3 && existingStatus !== 2) {
+      if (
+        detailCheck.recordset[0].StatusCode !== 4 &&
+        detailCheck.recordset[0].StatusCode !== 3 &&
+        detailCheck.recordset[0].StatusCode !== 2
+      ) {
         await transaction.request()
           .input("detailId", sql.UniqueIdentifier, lineItemId)
           .input("qty", sql.Int, item.qty || 1)
           .input("cost", sql.Decimal(18, 2), unitPrice)
-          .input("statusCode", sql.Int, 1) // Keep as 1 so KOT picks it up
+          .input("statusCode", sql.Int, currentStatusCode)
           .input(
             "userId",
             sql.UniqueIdentifier,
@@ -519,26 +293,7 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
             String(noteInfo.value || "").substring(0, 100)
           )
           .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0)
-          .query(`
-UPDATE RestaurantOrderDetailCur
-SET
-    Quantity = @qty,
-    PricePerUnit = @cost,
-    ActualAmount = @cost * @qty,
-    TotalDetailLineAmount = @cost * @qty,
-    StatusCode = 1,
-    Description = @dishName,
-    DishName = @dishName,
-    ModifiedBy = @userId,
-    ModifiedOn = GETDATE(),
-    ModifiersJSON = @mods,
-    ComboDetailsJSON = @comboDetailsJSON,
-    OrderNumber = @orderNo,
-    Remarks = @note,
-    isTakeAway = @isTakeaway
-WHERE OrderDetailId = @detailId
-  AND StatusCode NOT IN (2,3,4)
-`);
+          .query("UPDATE RestaurantOrderDetailCur SET Quantity = @qty, PricePerUnit = @cost, ActualAmount = @cost * @qty, TotalDetailLineAmount = @cost * @qty, StatusCode = 1, Description = @dishName, DishName = @dishName, ModifiedBy = @userId, ModifiedOn = GETDATE(), ModifiersJSON = @mods, ComboDetailsJSON = @comboDetailsJSON, OrderNumber = @orderNo, Remarks = @note, isTakeAway = @isTakeaway WHERE OrderDetailId = @detailId AND StatusCode <> 4 and StatusCode <> 3 and StatusCode <> 2");
       }
     } else {
       await transaction.request()
@@ -663,9 +418,7 @@ WHERE OrderDetailId = @detailId
           FROM RestaurantOrderDetailCur
           WHERE OrderId = @orderId
       ),
-      entry_Status = 'q',
-      isOrderClosed = 0,
-      StatusCode = 1
+      entry_Status = 'q'
   WHERE OrderId = @orderId
 `);
 }
@@ -739,7 +492,6 @@ async function syncTableStatus(req, tableId) {
       status: Number(updated.Status),
       totalAmount: Number(updated.TotalAmount) || 0,
       startTime: updated.StartTime,
-      currencySymbol: "$",
       currentOrderId: cleanOrderId,
       tableNo: updated.tableNo,
       section: sectionMap[String(updated.section)] || updated.section,
@@ -750,324 +502,120 @@ async function syncTableStatus(req, tableId) {
   return updated;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// KIOSK ROUTES — completely table-independent
-// ═══════════════════════════════════════════════════════════════
+// Routes
+router.get("/kiosk/tables", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    // Find next available empty table in Sections 1, 2, 3 in sequence order
+    const result = await pool.request().query(`
+      SELECT TOP 1 
+        tm.TableId, 
+        tm.TableNumber AS TableNo,
+        tm.DiningSection,
+        tm.SortCode
+      FROM TableMaster tm
+      WHERE tm.DiningSection IN ('1', '2', '3')
+        AND ISNULL(tm.Status, 0) = 0
+        AND tm.CurrentOrderId IS NULL
+        AND NOT EXISTS (
+          SELECT 1 
+          FROM RestaurantOrderCur ro 
+          WHERE (ro.Tableno = tm.TableNumber OR ro.Tableno = CAST(tm.TableId AS NVARCHAR(50)))
+            AND ro.isOrderClosed = 0
+            AND ro.StatusCode NOT IN (0, 3, 4)
+        )
+      ORDER BY 
+        CASE 
+          WHEN tm.DiningSection = '1' THEN 1
+          WHEN tm.DiningSection = '2' THEN 2
+          WHEN tm.DiningSection = '3' THEN 3
+          ELSE 4
+        END ASC,
+        tm.SortCode ASC,
+        tm.TableNumber ASC
+    `);
 
-/**
- * POST /api/order/kiosk/start
- * Called when a customer starts a Kiosk session (EAT IN or TAKE AWAY).
- * Generates a fresh, sequential, concurrency-safe OrderNumber.
- * Does NOT assign or read any Table.
- */
+    res.json({ success: true, table: result.recordset[0] || null, tables: result.recordset });
+  } catch (err) {
+    console.error("[Kiosk] /kiosk/tables ERROR:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.post("/kiosk/start", async (req, res) => {
   try {
-    const orderNumber = await generateKioskOrderNumber();
-    console.log(`[Kiosk] New session started. OrderNumber: ${orderNumber}`);
-    res.json({ success: true, orderNumber });
+    let { tableId, tableNo, orderType } = req.body;
+    const pool = await poolPromise;
+
+    // If tableId was not provided, automatically find the next available empty table in Sections 1, 2, 3
+    if (!tableId) {
+      const tableCheck = await pool.request().query(`
+        SELECT TOP 1 
+          tm.TableId, 
+          tm.TableNumber AS TableNo,
+          tm.DiningSection,
+          tm.SortCode
+        FROM TableMaster tm
+        WHERE tm.DiningSection IN ('1', '2', '3')
+          AND ISNULL(tm.Status, 0) = 0
+          AND tm.CurrentOrderId IS NULL
+          AND NOT EXISTS (
+            SELECT 1 
+            FROM RestaurantOrderCur ro 
+            WHERE (ro.Tableno = tm.TableNumber OR ro.Tableno = CAST(tm.TableId AS NVARCHAR(50)))
+              AND ro.isOrderClosed = 0
+              AND ro.StatusCode NOT IN (0, 3, 4)
+          )
+        ORDER BY 
+          CASE 
+            WHEN tm.DiningSection = '1' THEN 1
+            WHEN tm.DiningSection = '2' THEN 2
+            WHEN tm.DiningSection = '3' THEN 3
+            ELSE 4
+          END ASC,
+          tm.SortCode ASC,
+          tm.TableNumber ASC
+      `);
+
+      if (tableCheck.recordset.length > 0) {
+        tableId = tableCheck.recordset[0].TableId;
+        tableNo = tableCheck.recordset[0].TableNo;
+      }
+    }
+
+    const orderNumber = await getOrGenerateOrderId(req, tableId || "TAKEAWAY");
+    res.json({
+      success: true,
+      orderNumber,
+      tableId: tableId || null,
+      tableNo: tableNo || orderType || "TAKEAWAY"
+    });
   } catch (err) {
     console.error("[Kiosk] /kiosk/start ERROR:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-/**
- * GET /api/order/cart/kiosk/:orderId
- * Fetch kiosk cart items by OrderNumber — no tableId needed.
- */
-router.get("/cart/kiosk/:orderId", async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    if (!orderId || orderId === "NEW" || orderId.length < 2) {
-      return res.json({ items: [], currentOrderId: null });
-    }
-    const pool = await poolPromise;
-
-    const result = await pool.request()
-      .input("orderNo", sql.NVarChar(50), orderId)
-      .query(`
-        SELECT
-          d.OrderDetailId as lineItemId,
-          d.DishId as id,
-          d.Quantity as qty,
-          d.PricePerUnit as price,
-          d.StatusCode as statusCode,
-          ISNULL(dish.Name, d.DishName) as name,
-          dish.isServiceCharge AS isServiceCharge,
-          d.ModifiersJSON,
-          d.ComboDetailsJSON,
-          d.Remarks as note,
-          d.isTakeAway as isTakeaway,
-          CASE d.StatusCode
-            WHEN 1 THEN 'NEW'
-            WHEN 2 THEN 'SENT'
-            WHEN 3 THEN 'READY'
-            WHEN 4 THEN 'SERVED'
-            WHEN 5 THEN 'HOLD'
-            WHEN 0 THEN 'VOIDED'
-            ELSE 'SENT'
-          END as status
-        FROM RestaurantOrderDetailCur d
-        JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
-        LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
-        WHERE h.OrderNumber = @orderNo
-          AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
-          AND d.StatusCode IN (1)
-        ORDER BY d.CreatedOn ASC
-      `);
-
-    const items = result.recordset.map((i) => ({
-      ...i,
-      modifiers: i.ModifiersJSON ? (() => { try { return JSON.parse(i.ModifiersJSON); } catch { return []; } })() : [],
-      comboSelections: i.ComboDetailsJSON ? (() => { try { return JSON.parse(i.ComboDetailsJSON); } catch { return []; } })() : []
-    }));
-
-    res.json({ items, currentOrderId: orderId });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * GET /api/order/kiosk/customer/:carNumber
- * Search customer by CarNumber in kioskCustomer table.
- */
-router.get("/kiosk/customer/:carNumber", async (req, res) => {
-  try {
-    const { carNumber } = req.params;
-    if (!carNumber || !carNumber.trim()) {
-      return res.status(400).json({ success: false, error: "CarNumber is required" });
-    }
-
-    const pool = await poolPromise;
-    const cleanCar = carNumber.trim().toUpperCase();
-
-    const result = await pool.request()
-      .input("CarNumber", sql.NVarChar(50), cleanCar)
-      .query(`
-        SELECT TOP 1
-          CustomerVehicleId,
-          CustomerName,
-          CarNumber,
-          MobileNumber,
-          VehicleType,
-          DefaultDishId
-        FROM kioskCustomer
-        WHERE UPPER(LTRIM(RTRIM(CarNumber))) = @CarNumber
-          AND (IsActive = 1 OR IsActive IS NULL)
-      `);
-
-    if (result.recordset.length === 0) {
-      return res.json({
-        success: true,
-        exists: false,
-        customer: null
-      });
-    }
-
-    return res.json({
-      success: true,
-      exists: true,
-      customer: result.recordset[0]
-    });
-  } catch (error) {
-    console.error("Kiosk customer search error:", error);
-    return res.status(500).json({
-      success: false,
-      error: "Unable to search customer."
-    });
-  }
-});
-
-/**
- * GET /api/order/kiosk/customers
- * Get all active kiosk customers.
- */
-router.get("/kiosk/customers", async (req, res) => {
-  try {
-    const pool = await poolPromise;
-
-    const result = await pool.request().query(`
-      SELECT
-        CustomerVehicleId,
-        CustomerName,
-        CarNumber,
-        MobileNumber,
-        VehicleType,
-        DefaultDishId
-      FROM kioskCustomer
-      WHERE (IsActive = 1 OR IsActive IS NULL)
-      ORDER BY CreatedOn DESC
-    `);
-
-    return res.json({
-      success: true,
-      customers: result.recordset
-    });
-  } catch (error) {
-    console.error("Kiosk customers list error:", error);
-    return res.status(500).json({
-      success: false,
-      error: "Unable to load customers."
-    });
-  }
-});
-
-/**
- * POST /api/order/kiosk/customer/save
- * Insert or update kioskCustomer table.
- * If CustomerVehicleId or CarNumber exists, updates DefaultDishId, CustomerName, UpdatedOn.
- * If new customer, inserts with NEWID(), IsActive=1, CreatedOn=GETDATE().
- */
-router.post("/kiosk/customer/save", async (req, res) => {
-  try {
-    const {
-      customerVehicleId,
-      carNumber,
-      customerName,
-      defaultDishId,
-      mobileNumber,
-      vehicleType
-    } = req.body;
-
-    if (!carNumber || !String(carNumber).trim()) {
-      return res.status(400).json({ success: false, error: "CarNumber is required" });
-    }
-
-    const cleanCar = String(carNumber).trim().toUpperCase();
-    const cleanName = (customerName && String(customerName).trim()) || "Guest";
-    const cleanDishId = defaultDishId ? String(defaultDishId).trim() : null;
-    const pool = await poolPromise;
-
-    // Search existing by CustomerVehicleId or CarNumber
-    let checkQuery = pool.request()
-      .input("CarNumber", sql.NVarChar(50), cleanCar);
-
-    let whereSql = "WHERE UPPER(LTRIM(RTRIM(CarNumber))) = @CarNumber";
-    if (customerVehicleId) {
-      checkQuery = checkQuery.input("CustVehId", sql.NVarChar(100), String(customerVehicleId).trim());
-      whereSql = "WHERE CustomerVehicleId = @CustVehId OR UPPER(LTRIM(RTRIM(CarNumber))) = @CarNumber";
-    }
-
-    const checkRes = await checkQuery.query(`
-      SELECT TOP 1 CustomerVehicleId, CustomerName, CarNumber, DefaultDishId
-      FROM kioskCustomer
-      ${whereSql}
-    `);
-
-    let finalVehicleId = null;
-
-    if (checkRes.recordset.length > 0) {
-      finalVehicleId = checkRes.recordset[0].CustomerVehicleId;
-      await pool.request()
-        .input("CustVehId", sql.UniqueIdentifier, finalVehicleId)
-        .input("CustomerName", sql.NVarChar(150), cleanName)
-        .input("DefaultDishId", sql.NVarChar(100), cleanDishId || checkRes.recordset[0].DefaultDishId)
-        .input("MobileNumber", sql.NVarChar(50), mobileNumber || null)
-        .input("VehicleType", sql.NVarChar(50), vehicleType || null)
-        .query(`
-          UPDATE kioskCustomer
-          SET DefaultDishId = COALESCE(@DefaultDishId, DefaultDishId),
-              CustomerName = COALESCE(@CustomerName, CustomerName),
-              MobileNumber = COALESCE(@MobileNumber, MobileNumber),
-              VehicleType = COALESCE(@VehicleType, VehicleType),
-              IsActive = 1,
-              UpdatedOn = GETDATE()
-          WHERE CustomerVehicleId = @CustVehId
-        `);
-
-      console.log(`[kioskCustomer] Updated customer ${cleanCar} with DefaultDishId: ${cleanDishId}`);
-      return res.json({
-        success: true,
-        action: "updated",
-        customerVehicleId: finalVehicleId,
-        defaultDishId: cleanDishId,
-        message: "Customer updated successfully"
-      });
-    } else {
-      const insertRes = await pool.request()
-        .input("CustomerName", sql.NVarChar(150), cleanName)
-        .input("CarNumber", sql.NVarChar(50), cleanCar)
-        .input("DefaultDishId", sql.NVarChar(100), cleanDishId)
-        .input("MobileNumber", sql.NVarChar(50), mobileNumber || null)
-        .input("VehicleType", sql.NVarChar(50), vehicleType || null)
-        .query(`
-          DECLARE @NewId UNIQUEIDENTIFIER = NEWID();
-          INSERT INTO kioskCustomer (
-            CustomerVehicleId, CustomerName, CarNumber, MobileNumber, VehicleType,
-            DefaultDishId, IsActive, CreatedOn
-          ) VALUES (
-            @NewId, @CustomerName, @CarNumber, @MobileNumber, @VehicleType,
-            @DefaultDishId, 1, GETDATE()
-          );
-          SELECT @NewId AS CustomerVehicleId;
-        `);
-
-      finalVehicleId = insertRes.recordset[0]?.CustomerVehicleId;
-      console.log(`[kioskCustomer] Inserted customer ${cleanCar} with DefaultDishId: ${cleanDishId}`);
-      return res.json({
-        success: true,
-        action: "inserted",
-        customerVehicleId: finalVehicleId,
-        defaultDishId: cleanDishId,
-        message: "New customer created successfully"
-      });
-    }
-  } catch (error) {
-    console.error("Save kiosk customer error:", error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Unable to save customer."
-    });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════
-// Routes
 router.post("/save-cart", async (req, res) => {
   try {
-    const { tableId, items, userId, orderId, isKiosk, kioskOrderType } = req.body;
+    const { tableId, items, userId, orderId } = req.body;
     const pool = await poolPromise;
-
-    // ─── KIOSK PATH ──────────────────────────────────────────────────────────
-    // Kiosk orders are table-independent. They do NOT touch TableMaster at all.
-    if (isKiosk) {
-      const hasItems = items && items.length > 0;
-      let currentOrderId = orderId;
-
-      // Generate order number on first save if not yet assigned
-      if (hasItems && (!currentOrderId || currentOrderId === "NEW" || currentOrderId.length < 2)) {
-        currentOrderId = await generateKioskOrderNumber();
-        console.log(`[Kiosk] Generated new Kiosk Order Number: ${currentOrderId}`);
-      }
-
-      if (hasItems && currentOrderId) {
-        await syncToProfessionalTables(
-          { request: () => pool.request() },
-          null,        // tableId = null → syncToProfessionalTables uses "KIOSK" as tableNo
-          currentOrderId,
-          items || [],
-          userId,
-          kioskOrderType
-        );
-      }
-
-      return res.json({ success: true, orderId: currentOrderId });
-    }
-
-    // ─── STANDARD TABLE PATH ─────────────────────────────────────────────────
     const cleanId = String(tableId)
       .replace(/^\{|\}$/g, "")
       .trim();
+    // 🚀 UNIFIED ID: Only generate a professional ID if we actually have items to save
     let currentOrderId = orderId;
     const hasItems = items && items.length > 0;
 
     if (hasItems && (!currentOrderId || currentOrderId === "NEW" || currentOrderId === "#NEW" || currentOrderId === "PENDING" || currentOrderId.length < 10)) {
       currentOrderId = await getOrGenerateOrderId(req, cleanId);
     } else if (!hasItems) {
+      // If saving an empty cart, we should clear the TableMaster's CurrentOrderId
       currentOrderId = null;
     }
 
+    // const transaction = new sql.Transaction(pool);
+    // await transaction.begin();
     try {
       if (hasItems) {
         await syncToProfessionalTables(
@@ -1079,22 +627,30 @@ router.post("/save-cart", async (req, res) => {
         );
       }
 
-      await pool.request()
-        .input("tid", sql.UniqueIdentifier, cleanId)
-        .input("oid", sql.NVarChar(50), currentOrderId)
-        .query(`
-          UPDATE TableMaster 
-          SET Status = CASE WHEN @oid IS NOT NULL THEN 1 ELSE 0 END, 
-              CurrentOrderId = @oid,
-               entry_status = 'q',
-              StartTime = CASE WHEN @oid IS NOT NULL AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
-                               WHEN @oid IS NULL THEN NULL 
-                               ELSE StartTime END
-          WHERE TableId = @tid
-        `);
+      // 🚀 CRITICAL: Update TableMaster INSIDE the same transaction 
+      // await transaction.request()
+      const isGuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(cleanId);
+      if (isGuid) {
+        await pool.request()
+          .input("tid", sql.UniqueIdentifier, cleanId)
+          .input("oid", sql.NVarChar(50), currentOrderId)
+          .query(`
+            UPDATE TableMaster 
+            SET Status = CASE WHEN @oid IS NOT NULL THEN 1 ELSE 0 END, 
+                CurrentOrderId = @oid,
+                 entry_status = 'q',
+                StartTime = CASE WHEN @oid IS NOT NULL AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
+                                 WHEN @oid IS NULL THEN NULL 
+                                 ELSE StartTime END
+            WHERE TableId = @tid
+          `);
+      }
+
+      // await transaction.commit();
 
       res.json({ success: true, orderId: currentOrderId });
 
+      // 🔥 LIVE SYNC: Notify all other devices that this table's cart has changed
       const io = req.app.get("io");
       if (io) {
         io.to(`table:${cleanId.toLowerCase()}`).emit("cart_updated", { tableId: cleanId, orderId: currentOrderId });
@@ -1102,6 +658,7 @@ router.post("/save-cart", async (req, res) => {
 
       syncTableStatus(req, cleanId).catch(() => { });
     } catch (e) {
+      // if (transaction._isStarted) await transaction.rollback(); 
       console.error("❌ SaveCart SQL Error:", e.message);
       res.status(500).json({ error: "DB_ERROR: " + e.message });
     }
@@ -1110,57 +667,7 @@ router.post("/save-cart", async (req, res) => {
 
 router.post("/send", async (req, res) => {
   try {
-    const { tableId, orderId, items, userId, isKiosk, kioskOrderType } = req.body;
-
-    // ─── KIOSK SEND PATH ─────────────────────────────────────────────────────
-    if (isKiosk) {
-      console.log(`[Kiosk] /send called for orderId: ${orderId}`);
-      const pool = await poolPromise;
-      let finalOrderId = orderId;
-
-      // If no orderId yet (shouldn't happen, but guard), generate one
-      if (!finalOrderId || finalOrderId === "NEW" || finalOrderId.length < 2) {
-        finalOrderId = await generateKioskOrderNumber();
-        console.log(`[Kiosk] Generated Order Number at send time: ${finalOrderId}`);
-      }
-
-      const clientItems = (items || []).map(item => ({
-        ...item,
-        status: (item.status === 'VOIDED' || item.StatusCode === 0) ? 'VOIDED' : 'SENT'
-      }));
-
-      try {
-        // Sync items to professional tables with KIOSK as table name
-        await syncToProfessionalTables(
-          { request: () => pool.request() },
-          null,          // no tableId → uses KIOSK as tableNo
-          finalOrderId,
-          clientItems,
-          userId,
-          kioskOrderType
-        );
-
-        res.json({ success: true, orderId: finalOrderId });
-
-        // Broadcast new kiosk order to KDS
-        const io = req.app.get("io");
-        if (io) {
-          io.emit("new_order", {
-            orderId: finalOrderId,
-            context: { orderType: "KIOSK", tableId: null, tableNo: "KIOSK" },
-            items: clientItems,
-            createdAt: Date.now()
-          });
-          io.emit("kot_printed", { tableId: null, orderId: finalOrderId });
-        }
-      } catch (e) {
-        console.error("❌ [Kiosk] SEND ERROR:", e.message);
-        res.status(500).json({ error: "KIOSK_SEND_ERROR: " + e.message });
-      }
-      return;
-    }
-
-    // ─── STANDARD TABLE SEND PATH ─────────────────────────────────────────────
+    const { tableId, orderId, items, userId, isKiosk } = req.body;
 
     console.log(
       "SYNC ITEMS:",
@@ -1173,7 +680,9 @@ router.post("/send", async (req, res) => {
 
     const isGuid = /^[0-9a-fA-F-]{36}$/;
 
-    if (!isGuid.test(String(tableId))) {
+    if (isKiosk) {
+      actualTableId = null;
+    } else if (!isGuid.test(String(tableId))) {
 
       const tableLookup = await pool.request()
         .input("tableNo", sql.VarChar(50), String(tableId))
@@ -1190,9 +699,9 @@ router.post("/send", async (req, res) => {
       actualTableId = tableLookup.recordset[0].TableId;
     }
 
-    const cleanId = String(actualTableId)
-      .replace(/^\{|\}$/g, "")
-      .trim();
+    const cleanId = actualTableId
+      ? String(actualTableId).replace(/^\{|\}$/g, "").trim()
+      : null;
 
     // const transaction = new sql.Transaction(pool);
     // await transaction.begin();
@@ -1226,7 +735,7 @@ router.post("/send", async (req, res) => {
             WHERE (LTRIM(RTRIM(h.Tableno)) = (SELECT LTRIM(RTRIM(TableNumber)) FROM TableMaster WHERE TableId = @tableNo)
               OR LTRIM(RTRIM(h.Tableno)) = LTRIM(RTRIM(@tableNo))) 
               AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL) 
-             AND d.StatusCode =1`);
+              AND d.StatusCode <> 0`);
         clientItems = dbItems.recordset;
       }
       const sentItems = clientItems.map(item => ({
@@ -1234,28 +743,10 @@ router.post("/send", async (req, res) => {
         status: (item.status === 'VOIDED' || item.StatusCode === 0) ? 'VOIDED' : (item.status || 'SENT')
       }));
 
-      const alreadySent = await pool.request()
-        .input("tableId", sql.UniqueIdentifier, cleanId)
-        .query(`
-          SELECT COUNT(*) AS cnt
-          FROM RestaurantOrderDetailCur d
-          JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
-          WHERE
-            (LTRIM(RTRIM(h.Tableno)) =
-                (SELECT LTRIM(RTRIM(TableNumber))
-                FROM TableMaster
-                WHERE TableId = @tableId))
-            AND d.StatusCode = 1
-        `);
-
-      // ✅ FIX: If there are no StatusCode=1 items, this means:
-      // 1. Another device already sent this order (all flipped to 2), OR
-      // 2. The cart is genuinely empty (user refreshed)
-      // We should only block if the client actually sent items but none are NEW.
-      if (clientItems.length > 0 && alreadySent.recordset[0].cnt === 0) {
+      if (sentItems.length === 0) {
         return res.json({
           success: false,
-          message: "Order already placed by another device."
+          message: "No items found to send."
         });
       }
 
@@ -1269,18 +760,20 @@ router.post("/send", async (req, res) => {
       );
 
       // 4. Lock Table to the new ID
-      await pool.request()
-        .input("tid", sql.UniqueIdentifier, cleanId)
-        .input("oid", sql.NVarChar(50), finalOrderId)
-        .query(`
-          UPDATE TableMaster 
-          SET Status = 1, 
-              entry_status ='q',
-              CurrentOrderId = @oid,
-              StartTime = CASE WHEN StartTime IS NULL OR StartTime < '2000-01-01' THEN GETDATE() ELSE StartTime END,
-              ModifiedOn = GETDATE()
-          WHERE TableId = @tid
-        `);
+      if (cleanId) {
+        await pool.request()
+          .input("tid", sql.UniqueIdentifier, cleanId)
+          .input("oid", sql.NVarChar(50), finalOrderId)
+          .query(`
+            UPDATE TableMaster 
+            SET Status = 1, 
+                entry_status ='q',
+                CurrentOrderId = @oid,
+                StartTime = CASE WHEN StartTime IS NULL OR StartTime < '2000-01-01' THEN GETDATE() ELSE StartTime END,
+                ModifiedOn = GETDATE()
+            WHERE TableId = @tid
+          `);
+      }
 
       //   await transaction.commit();
 
@@ -1288,7 +781,7 @@ router.post("/send", async (req, res) => {
 
       // 🔥 REAL-TIME BROADCAST: Notify KDS and all other Waiter devices
       const io = req.app.get("io");
-      if (io) {
+      if (io && cleanId) {
         io.emit("new_order", {
           orderId: finalOrderId,
           context: {
@@ -1305,7 +798,7 @@ router.post("/send", async (req, res) => {
       }
 
       // 5. Refresh totals and notify instantly
-      syncTableStatus(req, cleanId).catch(() => { });
+      if (cleanId) syncTableStatus(req, cleanId).catch(() => { });
     } catch (e) {
       //   await transaction.rollback(); 
       console.error("❌ FULL SEND ERROR:", e);
@@ -1322,6 +815,10 @@ router.get("/cart/:tableId", async (req, res) => {
     }
     const pool = await poolPromise;
     const cleanId = tableId.replace(/^\{|\}$/g, "").trim();
+    const isGuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(cleanId);
+    if (!isGuid) {
+      return res.json({ items: [], currentOrderId: null });
+    }
 
     // Get table info (TableNumber + CurrentOrderId)
     const tableInfo = await pool.request()
@@ -1348,7 +845,6 @@ router.get("/cart/:tableId", async (req, res) => {
   d.DishId as id,
   d.Quantity as qty,
   d.PricePerUnit as price,
-  d.StatusCode as statusCode,
   ISNULL(dish.Name, d.DishName) as name,
    dish.isServiceCharge AS isServiceCharge,
   d.ModifiersJSON,
@@ -1369,7 +865,7 @@ JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
 LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
 WHERE
   h.isOrderClosed = 0
-  AND d.StatusCode IN (1)
+  AND d.StatusCode <> 0
   AND (
     h.OrderNumber = @orderNo
     OR h.OrderId = (
@@ -1388,17 +884,57 @@ ORDER BY d.CreatedOn ASC
       modifiers: i.ModifiersJSON ? (() => { try { return JSON.parse(i.ModifiersJSON); } catch { return []; } })() : []
     }));
 
-    console.log("QR CART SQL RESULT COUNT:", items.length);
-    items.forEach((item) => {
-      console.log("QR CART ITEM DEBUG:", {
-        dishName: item.name,
-        statusCode: item.statusCode,
-        status: item.status
-      });
-    });
-
     res.json({ items, currentOrderId: isRealOrderId ? currentOrderId : null });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get("/cart/kiosk/:orderId", async (req, res) => {
+  try {
+    const rawOrderId = req.params.orderId || "";
+    if (!rawOrderId || rawOrderId === "null" || rawOrderId === "undefined") {
+      return res.json({ items: [], currentOrderId: null });
+    }
+    const cleanOrderId = String(rawOrderId).split(":")[0].trim();
+    const pool = await poolPromise;
+    const itemsResult = await pool.request()
+      .input("oid", sql.NVarChar(100), cleanOrderId)
+      .query(`
+        SELECT 
+          d.OrderDetailId as lineItemId,
+          d.OrderDetailId,
+          d.DishId as id,
+          d.DishId,
+          d.Quantity as qty,
+          d.Quantity,
+          d.PricePerUnit as price,
+          d.PricePerUnit,
+          ISNULL(dish.Name, d.DishName) as name,
+          ISNULL(dish.Name, d.DishName) as Name,
+          dish.isServiceCharge AS isServiceCharge,
+          d.ModifiersJSON,
+          d.ComboDetailsJSON,
+          d.Remarks as note,
+          d.isTakeAway as isTakeaway,
+          CASE d.StatusCode
+            WHEN 1 THEN 'NEW'
+            WHEN 2 THEN 'SENT'
+            WHEN 3 THEN 'READY'
+            WHEN 4 THEN 'SERVED'
+            WHEN 5 THEN 'HOLD'
+            WHEN 0 THEN 'VOIDED'
+            ELSE 'SENT'
+          END as status
+        FROM RestaurantOrderDetailCur d
+        JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
+        LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
+        WHERE (h.OrderNumber = @oid OR d.OrderNumber = @oid OR CONVERT(varchar(50), h.OrderId) = @oid)
+          AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
+          AND d.StatusCode <> 0
+      `);
+    return res.json({ items: itemsResult.recordset || [], currentOrderId: cleanOrderId });
+  } catch (err) {
+    return res.json({ items: [], currentOrderId: req.params.orderId });
+  }
 });
 
 router.post("/cancel", async (req, res) => {
@@ -1463,12 +999,13 @@ router.post("/cancel", async (req, res) => {
             SettlementID, LastSettlementDate, BillNo, OrderType, TableNo, Section, 
             CashierID, BusinessUnitId, SysAmount, ManualAmount, CreatedBy, CreatedOn, 
             IsCancelled, CancellationReason, CancelledDate, CancelledByUserName, 
-            SubTotal, TotalTax, DiscountAmount, MobileNo, VoidItemQty, VoidItemAmount
+            SubTotal, TotalTax, DiscountAmount, MobileNo, VoidItemQty, VoidItemAmount, start_date
           ) VALUES (
             @sid, GETDATE(), @oid, 'DINE-IN', @tableNo, @section, 
             @userId, @bizId, 0, 0, @userId, GETDATE(), 
             1, @reason, GETDATE(), @userName, 
-            @subTotal, 0, 0, @mobile, @voidQty, @voidAmt
+            @subTotal, 0, 0, @mobile, @voidQty, @voidAmt,
+            (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
           )
         `);
 
@@ -1486,10 +1023,11 @@ router.post("/cancel", async (req, res) => {
           .query(`
             INSERT INTO SettlementItemDetail (
               SettlementID, DishId, DishName, Qty, Price, Status, OrderDateTime,
-              CategoryId, CategoryName, SubCategoryName
+              CategoryId, CategoryName, SubCategoryName, start_date
             ) VALUES (
               @sid, @dishId, @dishName, @qty, @price, 'VOIDED', GETDATE(),
-              @catId, @catName, @groupName
+              @catId, @catName, @groupName,
+              (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
             )
           `);
       }
@@ -1583,12 +1121,114 @@ router.post("/hold", async (req, res) => {
 
 router.post("/checkout", async (req, res) => {
   try {
-    const { tableId } = req.body;
+    const { tableId, orderId, cart, userId } = req.body;
     const cleanId = tableId.replace(/^\{|\}$/g, "").trim();
     const pool = await poolPromise;
+    const transaction = new sql.Transaction(pool);
+
+    await transaction.begin();
+
+    let orderNumber = orderId || null;
+    let orderGuid = null;
+    let tableNumber = null;
+
+    const tableInfo = await transaction.request()
+      .input("tid", sql.UniqueIdentifier, cleanId)
+      .query("SELECT TableNumber, CurrentOrderId FROM TableMaster WHERE TableId = @tid");
+
+    if (tableInfo.recordset.length > 0) {
+      tableNumber = tableInfo.recordset[0].TableNumber;
+      orderNumber = orderNumber || tableInfo.recordset[0].CurrentOrderId || null;
+    }
+
+    if (orderNumber) {
+      const headerCheck = await transaction.request()
+        .input("orderNo", sql.NVarChar(50), orderNumber)
+        .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo");
+
+      if (headerCheck.recordset.length > 0) {
+        orderGuid = headerCheck.recordset[0].OrderId;
+      } else {
+        orderGuid = crypto.randomUUID();
+        await transaction.request()
+          .input("orderId", sql.UniqueIdentifier, orderGuid)
+          .input("orderNo", sql.NVarChar(50), orderNumber)
+          .input("tableNo", sql.VarChar(20), tableNumber || "TAKEAWAY")
+          .input("userId", sql.UniqueIdentifier, toGuidOrNull(userId) || DEFAULT_GUID)
+          .input("bizId", sql.UniqueIdentifier, DEFAULT_GUID)
+          .query(`
+            INSERT INTO RestaurantOrderCur (
+              OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode,
+              CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId,
+              entry_Status, start_date
+            ) VALUES (
+              @orderId, @orderNo, GETDATE(), LTRIM(RTRIM(@tableNo)), 1,
+              @userId, GETDATE(), 0, @bizId, 'q',
+              (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
+            )
+          `);
+
+        await transaction.request()
+          .input("tid", sql.UniqueIdentifier, cleanId)
+          .input("orderNo", sql.NVarChar(50), orderNumber)
+          .query(`
+            UPDATE TableMaster
+            SET CurrentOrderId = @orderNo,
+                ModifiedOn = GETDATE()
+            WHERE TableId = @tid
+          `);
+      }
+    }
+
+    if (orderGuid && Array.isArray(cart) && cart.length > 0) {
+      const detailCheck = await transaction.request()
+        .input("orderId", sql.UniqueIdentifier, orderGuid)
+        .query("SELECT TOP 1 OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderId = @orderId");
+
+      if (detailCheck.recordset.length === 0) {
+        for (const item of cart) {
+          const itemId = crypto.randomUUID();
+          const quantity = Number(item.qty || item.Quantity || 1);
+          const price = Number(item.price || item.PricePerUnit || item.Price || 0);
+          const dishName = String(item.name || item.DishName || item.ProductName || "Dish").substring(0, 200);
+          const dishId = item.id || item.DishId || DEFAULT_GUID;
+
+          await transaction.request()
+            .input("detailId", sql.UniqueIdentifier, itemId)
+            .input("orderId", sql.UniqueIdentifier, orderGuid)
+            .input("dishId", sql.UniqueIdentifier, dishId)
+            .input("dishName", sql.NVarChar(200), dishName)
+            .input("qty", sql.Int, quantity)
+            .input("price", sql.Decimal(18, 2), price)
+            .input("amount", sql.Decimal(18, 2), price * quantity)
+            .input("bizId", sql.UniqueIdentifier, DEFAULT_GUID)
+            .input("orderNo", sql.NVarChar(50), orderNumber)
+            .input("userId", sql.UniqueIdentifier, toGuidOrNull(userId) || DEFAULT_GUID)
+            .input("note", sql.NVarChar(100), String(item.note || item.remarks || "").substring(0, 100))
+            .input("mods", sql.NVarChar(sql.MAX), JSON.stringify(item.modifiers || []).substring(0, 4000))
+            .input("combo", sql.NVarChar(sql.MAX), JSON.stringify(item.comboSelections || []).substring(0, 4000))
+            .query(`
+              INSERT INTO RestaurantOrderDetailCur (
+                OrderDetailId, OrderId, DishId, Description, DishName,
+                Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount,
+                StatusCode, CreatedBy, CreatedOn, ModifiersJSON,
+                OrderNumber, Remarks, isTakeAway, BusinessUnitId,
+                OrderDateTime, ComboDetailsJSON, start_date
+              ) VALUES (
+                @detailId, @orderId, @dishId, @dishName, @dishName,
+                @qty, @price, @amount, @amount, 1,
+                @userId, GETDATE(), @mods,
+                @orderNo, @note, 0, @bizId,
+                GETDATE(), @combo,
+                (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
+              )
+            `);
+        }
+      }
+    }
 
     // Step 1: Move table to Payment Pending (Status 2) and mark items as SERVED (4)
-    await pool.request()
+    await transaction.request()
       .input("tid", sql.UniqueIdentifier, cleanId)
       .query(`
         -- 1. Update Table Status to Checkout (2)
@@ -1604,6 +1244,8 @@ router.post("/checkout", async (req, res) => {
         AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
         AND d.StatusCode IN (1, 2, 3, 5);
       `);
+
+    await transaction.commit();
 
     const updated = await syncTableStatus(req, cleanId);
 
@@ -1624,6 +1266,7 @@ router.post("/checkout", async (req, res) => {
 
     res.json({ success: true, ...updated });
   } catch (err) {
+    try { if (transaction && transaction._isStarted) await transaction.rollback(); } catch (_) { }
     console.error("❌ Checkout Error:", err.message);
     res.status(500).json({ error: err.message });
   }
@@ -1742,21 +1385,6 @@ router.post("/log-print", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/order/reprint-kot  — queue a REPRINT for all items of an order
-// Called from POS cashier screen to re-send KOT to kitchen/KDS printers
-router.post("/reprint-kot", async (req, res) => {
-  try {
-    const { orderId } = req.body;
-    if (!orderId) return res.status(400).json({ success: false, error: "orderId is required" });
-    console.log(`[reprint-kot] Manual reprint requested for order: ${orderId}`);
-    await reprintKOT(orderId);
-    res.json({ success: true, message: `Reprint queued for ${orderId}` });
-  } catch (err) {
-    console.error("[reprint-kot] Error:", err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 router.post("/delete-cart-item", async (req, res) => {
 
   try {
@@ -1830,7 +1458,9 @@ router.post("/delete-cart-item", async (req, res) => {
 });
 
 router.get("/order-details/:orderId", async (req, res) => {
+
   try {
+
     const { orderId } = req.params;
 
     const pool = await poolPromise;
@@ -1838,118 +1468,56 @@ router.get("/order-details/:orderId", async (req, res) => {
     const result = await pool.request()
       .input("orderNo", sql.NVarChar(50), orderId)
       .query(`
-        SELECT TOP 1
-            o.OrderId,
+        SELECT
             o.Tableno,
             o.OrderDateTime,
             o.OrderNumber,
 
-            -- Get the MAX StatusCode across ALL items for this order (ignoring isDelivered filter)
-            (
-              SELECT MAX(d2.StatusCode)
-              FROM RestaurantOrderDetailCur d2
-              WHERE d2.OrderId = o.OrderId
-                AND d2.StatusCode IN (1,2,3,4)
-            ) AS StatusCode,
-
             CASE
-                WHEN (
-                  SELECT MAX(d2.StatusCode)
-                  FROM RestaurantOrderDetailCur d2
-                  WHERE d2.OrderId = o.OrderId
-                    AND d2.StatusCode IN (1,2,3,4)
-                ) = 2 THEN 'PREPARING'
-                WHEN (
-                  SELECT MAX(d2.StatusCode)
-                  FROM RestaurantOrderDetailCur d2
-                  WHERE d2.OrderId = o.OrderId
-                    AND d2.StatusCode IN (1,2,3,4)
-                ) = 3 THEN 'READY'
-                WHEN (
-                  SELECT MAX(d2.StatusCode)
-                  FROM RestaurantOrderDetailCur d2
-                  WHERE d2.OrderId = o.OrderId
-                    AND d2.StatusCode IN (1,2,3,4)
-                ) = 4 THEN 'COMPLETED'
-                ELSE 'PREPARING'
-            END AS StatusLabel
+                WHEN d.StatusCode = '2' THEN 'PREPARING'
+                WHEN d.StatusCode = '3' THEN 'READY'
+                WHEN d.StatusCode = '1' THEN 'PREPARING'
+                ELSE 'UNKNOWN'
+            END AS StatusLabel,
+
+            d.StatusCode AS StatusCode,
+            d.Description,
+            d.DishName,
+            d.Quantity,
+            d.PricePerUnit AS Price,
+             d.ComboDetailsJSON,
+             d.ModifiersJSON
+
 
         FROM RestaurantOrderCur o
 
-        WHERE o.entry_status = 'q'
-          AND (
-            o.OrderNumber = @orderNo
-            OR CAST(o.OrderId AS NVARCHAR(50)) = @orderNo
-          )
+        INNER JOIN RestaurantOrderDetailCur d
+            ON o.OrderId = d.OrderId
 
-        ORDER BY o.OrderDateTime DESC
+        WHERE ISNULL(d.isDelivered, 0) = 0
+          AND d.StatusCode IN ('1','2', '3')
+          AND o.entry_status = 'q'
+          AND d.OrderNumber = @orderNo
+
+        ORDER BY o.OrderDateTime ASC
       `);
 
     res.json(result.recordset);
 
   } catch (err) {
+
     console.log(err);
 
     res.status(500).json({
       success: false,
-      error: err.message,
+      error: err.message
     });
+
   }
-});
 
-// Get all line items for an order (used by Order Details popup on confirmation page)
-router.get("/order-items/:orderId", async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const pool = await poolPromise;
-
-    // First resolve the OrderId GUID from the OrderNumber string
-    const orderRes = await pool.request()
-      .input("orderNo", sql.NVarChar(50), orderId)
-      .query(`
-        SELECT TOP 1 OrderId
-        FROM RestaurantOrderCur
-        WHERE OrderNumber = @orderNo
-           OR CAST(OrderId AS NVARCHAR(50)) = @orderNo
-        ORDER BY OrderDateTime DESC
-      `);
-
-    if (!orderRes.recordset.length) {
-      return res.json({ success: true, items: [] });
-    }
-
-    const orderGuid = String(orderRes.recordset[0].OrderId).replace(/^\{|\}$/g, '').trim();
-
-    const result = await pool.request()
-      .input("orderId", sql.UniqueIdentifier, orderGuid)
-      .query(`
-        SELECT
-            d.OrderDetailId,
-            d.DishName,
-            d.Quantity,
-            d.PricePerUnit,
-            d.StatusCode,
-            d.Remarks,
-            (d.Quantity * d.PricePerUnit) AS LineTotal
-        FROM RestaurantOrderDetailCur d
-        WHERE d.OrderId = @orderId
-          AND d.StatusCode > 0
-        ORDER BY d.CreatedOn ASC
-      `);
-
-    console.log("REQ ORDER:", orderId);
-    console.log("ORDER GUID:", orderGuid);
-    console.log("ITEMS:", result.recordset);
-
-    res.json({ success: true, items: result.recordset });
-  } catch (err) {
-    console.error("❌ order-items error:", err.message, err.stack);
-    res.status(500).json({ success: false, error: err.message });
-  }
 });
 
 //online payment process
-
 router.post("/payment-status", async (req, res) => {
   try {
     const { tableId, paymentStatus } = req.body;
@@ -1989,39 +1557,25 @@ router.post("/mark-sent", async (req, res) => {
   try {
     const { orderId } = req.body;
 
-    console.log(`\n======================================================`);
-    console.log(`[mark-sent] Called for orderId: '${orderId}'`);
-    console.log(`======================================================`);
-
     const pool = await poolPromise;
 
-    const appSettings = await pool.request().query(`
-      SELECT TOP 1 Enablekotqr
-      FROM AppSettings
-    `);
+    // ✅ KOT for kitchen
+    try {
+      await generateAndQueueKOTs(orderId);
+    } catch (err) {
+      console.error("Failed to queue KOT for mark-sent:", err);
+    }
 
-    const enableKotQr = Number(appSettings.recordset[0]?.Enablekotqr || 0);
-    const finalStatusCode = enableKotQr === 1 ? 2 : 1;
-
-    console.log(`[mark-sent] Enablekotqr = ${enableKotQr}`);
-    console.log(`[mark-sent] finalStatusCode = ${finalStatusCode}`);
-
-    if (enableKotQr === 1) {
-      console.log(`[mark-sent] KOT enabled → calling generateAndQueueKOTs('${orderId}')`);
-      try {
-        await generateAndQueueKOTs(orderId);
-        console.log(`[mark-sent] generateAndQueueKOTs completed`);
-      } catch (err) {
-        console.error(`[mark-sent] generateAndQueueKOTs threw exception: ${err.message}`);
-        console.error(err.stack);
-      }
-    } else {
-      console.log(`[mark-sent] KOT disabled (Enablekotqr=${enableKotQr}), skipping generateAndQueueKOTs`);
+    // ✅ Receipt for Cash payment — called ONCE only here (not in complete-online-payment)
+    try {
+      await generateAndQueueReceipt(orderId, "CASH");
+    } catch (err) {
+      console.error("Failed to queue receipt for mark-sent:", err);
     }
 
     const result = await pool.request()
       .input("orderNo", sql.NVarChar(50), orderId)
-      .input("statusCode", sql.Int, finalStatusCode)
+      .input("statusCode", sql.Int, 2)
       .query(`
         UPDATE RestaurantOrderDetailCur
         SET StatusCode = @statusCode
@@ -2034,46 +1588,13 @@ router.post("/mark-sent", async (req, res) => {
 
     console.log("Rows Updated:", result.rowsAffected);
 
-    /* TABLE ALERT MSG */
-
-    const tableResult = await pool.request()
-      .input("orderNo", sql.NVarChar(50), orderId)
-      .query(`
-    SELECT TOP 1 Tableno
-    FROM RestaurantOrderCur
-    WHERE OrderNumber = @orderNo
-  `);
-
-    const tableNo = tableResult.recordset[0]?.Tableno || "";
-
-
-    if (finalStatusCode === 2 && result.rowsAffected[0] > 0) {
-      const io = req.app.get("io");
-
-      console.log("🔥 Emitting qr_customer_entered");
-      console.log({
-        orderId,
-        tableNo
-      });
-
-      console.log("Socket Exists:", !!io);
-
-      io.emit("qr_customer_entered", {
-        orderId,
-        tableNo,
-        statusCode: 2
-      });
-
-      console.log("✅ qr_customer_entered emitted");
-    }
-
-    if (enableKotQr === 1 && req.io) {
+    if (req.io) {
       req.io.emit("qr-print-request", {
         orderId: orderId,
         source: "QR",
         paymentType: "cashier",
-        printKOT: false,
-        printBill: false
+        printKOT: true,
+        printBill: true
       });
     }
 
@@ -2099,19 +1620,7 @@ router.post("/complete-online-payment", async (req, res) => {
   const transaction = new sql.Transaction(pool);
 
   try {
-    const {
-      orderId,
-      tableNo,
-      tableId,
-      totalAmount,
-      cart,
-      paymentMethod,
-      kioskOrderType,
-      kioskCarNumber,
-      kioskCustomerName,
-      defaultDishId,
-      customerVehicleId
-    } = req.body;
+    const { orderId, tableNo, tableId, totalAmount, cart, paymentMethod, gatewayReference, GatewayReference, kioskCarNumber, kioskCustomerName } = req.body;
 
     console.log("🔍 [PAYMENT] complete-online-payment called", {
       orderId,
@@ -2119,8 +1628,7 @@ router.post("/complete-online-payment", async (req, res) => {
       tableId,
       totalAmount,
       paymentMethod,
-      cartLength: cart?.length || 0,
-      kioskOrderType
+      cartLength: cart?.length || 0
     });
 
     if (!orderId) {
@@ -2130,14 +1638,7 @@ router.post("/complete-online-payment", async (req, res) => {
     const cleanTableId = tableId ? String(tableId).replace(/^\{|\}$/g, "").trim() : null;
     const amount = parseFloat(totalAmount) || 0;
     const pMethod = (paymentMethod || "ONLINE").toUpperCase();
-    const settlementId = crypto.randomUUID();
-
-    // Generate and queue KOT for newly added items (StatusCode = 1) before they become 2 (Paid)
-    try {
-      await generateAndQueueKOTs(orderId);
-    } catch (err) {
-      console.error("Failed to queue KOT for online payment:", err);
-    }
+    let settlementId = crypto.randomUUID();
 
     await transaction.begin();
 
@@ -2167,9 +1668,7 @@ router.post("/complete-online-payment", async (req, res) => {
 
       // Get TableNumber
       let tableNumber = tableNo || "TAKEAWAY";
-      if (!tableId && tableNo === null && kioskOrderType) {
-         tableNumber = kioskOrderType === "EAT_IN" ? "KIOSK-EATIN" : "KIOSK";
-      } else if (cleanTableId) {
+      if (cleanTableId) {
         const tableInfo = await transaction.request()
           .input("tid", sql.UniqueIdentifier, cleanTableId)
           .query("SELECT TableNumber FROM TableMaster WHERE TableId = @tid");
@@ -2188,10 +1687,11 @@ router.post("/complete-online-payment", async (req, res) => {
         .query(`
                     INSERT INTO RestaurantOrderCur (
                         OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, 
-                        CreatedBy, CreatedOn, BusinessUnitId, isOrderClosed, entry_Status
+                        CreatedBy, CreatedOn, BusinessUnitId, isOrderClosed, entry_Status, start_date
                     ) VALUES (
                         @orderId, @orderNo, GETDATE(), @tableNo, 1, 
-                        @userId, GETDATE(), @bizId, 0, 'q'
+                        @userId, GETDATE(), @bizId, 0, 'q',
+                        (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
                     )
                 `);
     } else {
@@ -2214,6 +1714,7 @@ router.post("/complete-online-payment", async (req, res) => {
     // ── STEP 3: GET OR CREATE ITEMS ──────────────────────────────────────────
     let itemsRes = await transaction.request()
       .input("orderId", sql.UniqueIdentifier, guidOrderId)
+      .input("orderNo", sql.NVarChar(50), orderId)
       .query(`
                 SELECT
                     d.DishId, d.DishName, d.Quantity, d.PricePerUnit,
@@ -2226,219 +1727,268 @@ router.post("/complete-online-payment", async (req, res) => {
                 LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
                 LEFT JOIN DishGroupMaster dg ON dish.DishGroupId = dg.DishGroupId
                 LEFT JOIN CategoryMaster cm ON dg.CategoryId = cm.CategoryId
-                WHERE d.OrderId = @orderId
+                WHERE (d.OrderId = @orderId OR d.OrderNumber = @orderNo)
                   AND d.StatusCode NOT IN (0)
             `);
 
     let dbItems = itemsRes.recordset;
 
-    // If no items found, create from cart
-    // if (dbItems.length === 0 && cart && cart.length > 0) {
-    //   console.log(`⚠️ [PAYMENT] No items found, creating ${cart.length} items from cart`);
+    // If no items found in DB, create from cart array sent in payload
+    if (dbItems.length === 0 && cart && cart.length > 0) {
+      console.log(`⚠️ [PAYMENT] No items found in DB, creating ${cart.length} items from cart`);
 
-    //   for (const item of cart) {
-    //     const itemId = crypto.randomUUID();
-    //     const dishId = item.id || item.DishId || DEFAULT_GUID;
-    //     const dishName = item.name || item.Name || "Unknown";
-    //     const qty = item.qty || 1;
-    //     const price = item.price || item.Price || 0;
+      for (const item of cart) {
+        const itemId = crypto.randomUUID();
+        const dishId = item.id || item.DishId || DEFAULT_GUID;
+        const dishName = item.name || item.Name || "Unknown";
+        const qty = Number(item.qty || item.Quantity || 1);
+        const price = Number(item.price || item.Price || 0);
 
-    //     await transaction.request()
-    //       .input("detailId", sql.UniqueIdentifier, itemId)
-    //       .input("orderId", sql.UniqueIdentifier, guidOrderId)
-    //       .input("dishId", sql.UniqueIdentifier, dishId)
-    //       .input("dishName", sql.NVarChar(255), dishName)
-    //       .input("qty", sql.Int, qty)
-    //       .input("price", sql.Decimal(18, 2), price)
-    //       .input("bizId", sql.UniqueIdentifier, businessUnitId)
-    //       .input("orderNo", sql.NVarChar(50), orderId)
-    //       .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
-    //       .query(`
-    //                     INSERT INTO RestaurantOrderDetailCur (
-    //                         OrderDetailId, OrderId, DishId, DishName, Quantity, PricePerUnit,
-    //                         ActualAmount, TotalDetailLineAmount, StatusCode, CreatedOn,
-    //                         BusinessUnitId, OrderNumber, CreatedBy, Description
-    //                     ) VALUES (
-    //                         @detailId, @orderId, @dishId, @dishName, @qty, @price,
-    //                         @price * @qty, @price * @qty, 2, GETDATE(),
-    //                         @bizId, @orderNo, @userId, @dishName
-    //                     )
-    //                 `);
-    //   }
+        await transaction.request()
+          .input("detailId", sql.UniqueIdentifier, itemId)
+          .input("orderId", sql.UniqueIdentifier, guidOrderId)
+          .input("dishId", sql.UniqueIdentifier, dishId)
+          .input("dishName", sql.NVarChar(255), dishName)
+          .input("qty", sql.Int, qty)
+          .input("price", sql.Decimal(18, 2), price)
+          .input("bizId", sql.UniqueIdentifier, businessUnitId)
+          .input("orderNo", sql.NVarChar(50), orderId)
+          .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
+          .query(`
+                        INSERT INTO RestaurantOrderDetailCur (
+                            OrderDetailId, OrderId, DishId, DishName, Quantity, PricePerUnit,
+                            ActualAmount, TotalDetailLineAmount, StatusCode, CreatedOn,
+                            BusinessUnitId, OrderNumber, CreatedBy, Description
+                        ) VALUES (
+                            @detailId, @orderId, @dishId, @dishName, @qty, @price,
+                            @price * @qty, @price * @qty, 2, GETDATE(),
+                            @bizId, @orderNo, @userId, @dishName
+                        )
+                    `);
+      }
 
-    //   // Re-fetch items
-    //   itemsRes = await transaction.request()
-    //     .input("orderId", sql.UniqueIdentifier, guidOrderId)
-    //     .query(`
-    //                 SELECT
-    //                     d.DishId, d.DishName, d.Quantity, d.PricePerUnit,
-    //                     d.TotalDetailLineAmount, d.StatusCode,
-    //                     dish.DishGroupId,
-    //                     dg.CategoryId,
-    //                     cm.CategoryName,
-    //                     dg.DishGroupName
-    //                 FROM RestaurantOrderDetailCur d
-    //                 LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
-    //                 LEFT JOIN DishGroupMaster dg ON dish.DishGroupId = dg.DishGroupId
-    //                 LEFT JOIN CategoryMaster cm ON dg.CategoryId = cm.CategoryId
-    //                 WHERE d.OrderId = @orderId
-    //                   AND d.StatusCode NOT IN (0)
-    //             `);
-    //   dbItems = itemsRes.recordset;
-    // }
+      // Re-fetch items
+      itemsRes = await transaction.request()
+        .input("orderId", sql.UniqueIdentifier, guidOrderId)
+        .input("orderNo", sql.NVarChar(50), orderId)
+        .query(`
+                    SELECT
+                        d.DishId, d.DishName, d.Quantity, d.PricePerUnit,
+                        d.TotalDetailLineAmount, d.StatusCode,
+                        dish.DishGroupId,
+                        dg.CategoryId,
+                        cm.CategoryName,
+                        dg.DishGroupName
+                    FROM RestaurantOrderDetailCur d
+                    LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
+                    LEFT JOIN DishGroupMaster dg ON dish.DishGroupId = dg.DishGroupId
+                    LEFT JOIN CategoryMaster cm ON dg.CategoryId = cm.CategoryId
+                    WHERE (d.OrderId = @orderId OR d.OrderNumber = @orderNo)
+                      AND d.StatusCode NOT IN (0)
+                `);
+      dbItems = itemsRes.recordset;
+    }
 
     const subTotal = dbItems.reduce((sum, i) => sum + (i.TotalDetailLineAmount || 0), 0);
     console.log(`🔍 [PAYMENT] Found ${dbItems.length} items, SubTotal: ${subTotal}`);
 
-    // ── STEP 4: UPSERT SETTLEMENT HEADER ─────────────────────────────────────
-    const tableNoValue = tableNo || header?.Tableno || null;
-    const sectionValue = header?.DiningSection || null;
+    const extraCharge = parseFloat(req.body.extraCharge) || 0;
+    const isPaidOrder = pMethod.includes("YEAH") || pMethod.includes("YEA") || req.body.isPaid === true;
+    const isYeahPay = true; // Always generate settlement records for the order
 
-    const existingSettlement = await transaction.request()
-      .input("oid", sql.NVarChar(50), orderId)
-      .query("SELECT SettlementID FROM SettlementHeader WHERE BillNo = @oid");
+    // ── STEP 4: UPSERT SETTLEMENT HEADER (ONLY FOR YEAPAY / ONLINE PAID ORDERS) ─────
+    if (isYeahPay) {
+      const tableNoValue = tableNo || header?.Tableno || null;
+      const sectionValue = header?.DiningSection || null;
 
-    let isSettlementExists = false;
-    if (existingSettlement.recordset.length > 0) {
-      settlementId = existingSettlement.recordset[0].SettlementID;
-      isSettlementExists = true;
-    }
-
-    if (isSettlementExists) {
-      await transaction.request()
-        .input("sid", sql.UniqueIdentifier, settlementId)
-        .input("tableNo", sql.NVarChar(50), tableNoValue)
-        .input("section", sql.NVarChar(100), sectionValue)
-        .input("bizId", sql.UniqueIdentifier, businessUnitId)
-        .input("subTotal", sql.Money, subTotal || amount)
-        .input("sysAmount", sql.Money, amount)
-        .input("mobile", sql.NVarChar(50), header?.MobileNo || null)
-        .input("payMode", sql.NVarChar(50), pMethod)
-        .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
-        .query(`
-                  UPDATE SettlementHeader
-                  SET LastSettlementDate = GETDATE(), TableNo = @tableNo, Section = @section,
-                      BusinessUnitId = @bizId, SysAmount = @sysAmount, ManualAmount = @sysAmount,
-                      SubTotal = @subTotal, MobileNo = @mobile, PayMode = @payMode
-                  WHERE SettlementID = @sid
-              `);
-      console.log(`✅ [PAYMENT] SettlementHeader updated: ${settlementId}`);
-    } else {
-      await transaction.request()
-        .input("sid", sql.UniqueIdentifier, settlementId)
+      const existingSettlement = await transaction.request()
         .input("oid", sql.NVarChar(50), orderId)
-        .input("tableNo", sql.NVarChar(50), tableNoValue)
-        .input("section", sql.NVarChar(100), sectionValue)
-        .input("bizId", sql.UniqueIdentifier, businessUnitId)
-        .input("subTotal", sql.Money, subTotal || amount)
-        .input("sysAmount", sql.Money, amount)
-        .input("mobile", sql.NVarChar(50), header?.MobileNo || null)
-        .input("payMode", sql.NVarChar(50), pMethod)
-        .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
-        .query(`
-                  INSERT INTO SettlementHeader (
-                      SettlementID, LastSettlementDate, BillNo, OrderType, TableNo, Section,
-                      BusinessUnitId, SysAmount, ManualAmount, CreatedOn,
-                      SubTotal, TotalTax, DiscountAmount, MobileNo, IsCancelled,
-                      CreatedBy, start_date
-                  ) VALUES (
-                      @sid, GETDATE(), @oid, 'DINE-IN', @tableNo, @section,
-                      @bizId, @sysAmount, @sysAmount, GETDATE(),
-                      @subTotal, 0, 0, @mobile, 0,
-                      @userId,(SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
-                  )
-              `);
-      console.log(`✅ [PAYMENT] SettlementHeader inserted: ${settlementId}`);
-    }
+        .query("SELECT SettlementID FROM SettlementHeader WHERE BillNo = @oid");
 
-    // ── STEP 5: UPSERT SETTLEMENT ITEM DETAILS ──────────────────────────────
-    // ✅ FIXED: Removed TotalAmount column and clear existing details if update
-    if (isSettlementExists) {
-      await transaction.request()
-        .input("sid", sql.UniqueIdentifier, settlementId)
-        .query("DELETE FROM SettlementItemDetail WHERE SettlementID = @sid");
-    }
+      let isSettlementExists = false;
+      if (existingSettlement.recordset.length > 0) {
+        settlementId = existingSettlement.recordset[0].SettlementID;
+        isSettlementExists = true;
+      }
 
-    for (const item of dbItems) {
-      await transaction.request()
-        .input("sid", sql.UniqueIdentifier, settlementId)
-        .input("dishId", sql.UniqueIdentifier, item.DishId || null)
-        .input("dishName", sql.NVarChar(255), item.DishName || "Unknown")
-        .input("qty", sql.Int, item.Quantity || 1)
-        .input("price", sql.Decimal(18, 2), item.PricePerUnit || 0)
-        .input("catId", sql.UniqueIdentifier, item.CategoryId || null)
-        .input("catName", sql.NVarChar(255), item.CategoryName || "")
-        .input("groupName", sql.NVarChar(255), item.DishGroupName || "")
-        .query(`
-                    INSERT INTO SettlementItemDetail (
-                        SettlementID, DishId, DishName, Qty, Price, Status, OrderDateTime,
-                        CategoryId, CategoryName, SubCategoryName,start_date
+      if (isSettlementExists) {
+        await transaction.request()
+          .input("sid", sql.UniqueIdentifier, settlementId)
+          .input("tableNo", sql.NVarChar(50), tableNoValue)
+          .input("section", sql.NVarChar(100), sectionValue)
+          .input("bizId", sql.UniqueIdentifier, businessUnitId)
+          .input("subTotal", sql.Money, subTotal || amount)
+          .input("sysAmount", sql.Money, amount)
+          .input("mobile", sql.NVarChar(50), header?.MobileNo || null)
+          .input("payMode", sql.NVarChar(50), pMethod)
+          .input("extraCharge", sql.Numeric(18, 2), extraCharge)
+          .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
+          .query(`
+                    UPDATE SettlementHeader
+                    SET LastSettlementDate = GETDATE(), TableNo = @tableNo, Section = @section,
+                        BusinessUnitId = @bizId, SysAmount = @sysAmount, ManualAmount = @sysAmount,
+                        SubTotal = @subTotal, MobileNo = @mobile,
+                        PaymodeServiceCharge = @extraCharge
+                    WHERE SettlementID = @sid
+                `);
+        console.log(`✅ [PAYMENT] SettlementHeader updated: ${settlementId}`);
+      } else {
+        await transaction.request()
+          .input("sid", sql.UniqueIdentifier, settlementId)
+          .input("oid", sql.NVarChar(50), orderId)
+          .input("tableNo", sql.NVarChar(50), tableNoValue)
+          .input("section", sql.NVarChar(100), sectionValue)
+          .input("bizId", sql.UniqueIdentifier, businessUnitId)
+          .input("subTotal", sql.Money, subTotal || amount)
+          .input("sysAmount", sql.Money, amount)
+          .input("mobile", sql.NVarChar(50), header?.MobileNo || null)
+          .input("payMode", sql.NVarChar(50), pMethod)
+          .input("extraCharge", sql.Numeric(18, 2), extraCharge)
+          .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
+          .query(`
+                    INSERT INTO SettlementHeader (
+                        SettlementID, LastSettlementDate, BillNo, OrderType, TableNo, Section,
+                        BusinessUnitId, SysAmount, ManualAmount, CreatedOn,
+                        SubTotal, TotalTax, DiscountAmount, MobileNo, IsCancelled,
+                        CreatedBy, start_date, PaymodeServiceCharge
                     ) VALUES (
-                        @sid, @dishId, @dishName, @qty, @price, 'NORMAL', GETDATE(),
-                        @catId, @catName, @groupName,(SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
+                        @sid, GETDATE(), @oid, 'DINE-IN', @tableNo, @section,
+                        @bizId, @sysAmount, @sysAmount, GETDATE(),
+                        @subTotal, 0, 0, @mobile, 0,
+                        @userId,
+                        (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC),
+                        @extraCharge
                     )
                 `);
-    }
-    console.log(`✅ [PAYMENT] ${dbItems.length} SettlementItemDetail(s) inserted`);
+        console.log(`✅ [PAYMENT] SettlementHeader inserted: ${settlementId}`);
+      }
 
-    // ── STEP 6: UPSERT PAYMENT DETAIL ────────────────────────────────────────
-    const paymodeRes = await transaction.request()
-      .input("payMode", sql.NVarChar(50), 'Online')
-      .query(`SELECT TOP 1 Position FROM Paymode WHERE UPPER(LTRIM(RTRIM(PayMode))) = UPPER(LTRIM(RTRIM(@payMode)))`);
-    const paymodePosition = paymodeRes.recordset[0]?.Position || 3;
+      // ── STEP 4.5: UPSERT SETTLEMENT TOTALS ─────────────────────────────────
+      const receiptCount = dbItems.reduce((sum, item) => sum + (Number(item.Quantity) || 0), 0);
+      const settlementGatewayReference = gatewayReference || GatewayReference || null;
+      const cashIn = amount;
 
-    const existingPayment = await transaction.request()
-      .input("orderId", sql.UniqueIdentifier, guidOrderId)
-      .query("SELECT PaymentId FROM PaymentDetailCur WHERE OrderId = @orderId");
-
-    if (existingPayment.recordset.length > 0) {
       await transaction.request()
-        .input("orderId", sql.UniqueIdentifier, guidOrderId)
-        .input("paymode", sql.Int, paymodePosition)
-        .input("amount", sql.Decimal(18, 2), amount)
-        .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
+        .input("sid", sql.UniqueIdentifier, settlementId)
+        .input("payMode", sql.VarChar(50), pMethod)
+        .input("sysAmount", sql.Money, amount)
+        .input("manualAmount", sql.Money, amount)
+        .input("amountDiff", sql.Money, 0)
+        .input("receiptCount", sql.Numeric(18, 0), receiptCount)
+        .input("gatewayReference", sql.NVarChar(255), settlementGatewayReference)
+        .input("cashIn", sql.Numeric(18, 2), cashIn)
+        .input("cashOut", sql.Numeric(18, 2), 0)
         .query(`
-                  UPDATE PaymentDetailCur
-                  SET PaymentCollectedOn = GETDATE(), Paymode = @paymode, Amount = @amount, ModifiedBy = @userId, ModifiedOn = GETDATE()
-                  WHERE OrderId = @orderId
-              `);
-      console.log(`✅ [PAYMENT] PaymentDetailCur updated`);
-    } else {
-      await transaction.request()
-        .input("paymentId", sql.UniqueIdentifier, settlementId)
-        .input("restaurantBillId", sql.UniqueIdentifier, settlementId)
-        .input("orderId", sql.UniqueIdentifier, guidOrderId)
-        .input("paymode", sql.Int, paymodePosition)
-        .input("amount", sql.Decimal(18, 2), amount)
-        .input("bizId", sql.UniqueIdentifier, businessUnitId)
-        .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
-        .query(`
-                  INSERT INTO PaymentDetailCur (
-                      PaymentId, RestaurantBillId, OrderId, BilledFor, 
-                      PaymentCollectedOn, PaymentType, Paymode, Amount,
-                      BusinessUnitId, CreatedBy, CreatedOn, ModifiedBy, ModifiedOn
-                  ) VALUES (
-                      @paymentId, @restaurantBillId, @orderId, 1,
-                      GETDATE(), 1, @paymode, @amount,
-                      @bizId, @userId, GETDATE(), @userId, GETDATE()
-                  ) 
-              `);
-      console.log(`✅ [PAYMENT] PaymentDetailCur inserted`);
+          DELETE FROM SettlementTotalSales WHERE SettlementID = @sid;
+          DELETE FROM SettlementTranDetail WHERE SettlementID = @sid;
+
+          INSERT INTO SettlementTotalSales
+            (SettlementID, PayMode, SysAmount, ManualAmount, AmountDiff, ReceiptCount, GatewayReference)
+          VALUES
+            (@sid, @payMode, @sysAmount, @manualAmount, @amountDiff, @receiptCount, @gatewayReference);
+
+          INSERT INTO SettlementTranDetail
+            (SettlementID, PayMode, CashIn, CashOut)
+          VALUES
+            (@sid, @payMode, @cashIn, @cashOut);
+        `);
+      console.log(`✅ [PAYMENT] SettlementTotalSales and SettlementTranDetail updated: ${settlementId}`);
+
+      // ── STEP 5: UPSERT SETTLEMENT ITEM DETAILS ──────────────────────────────
+      if (isSettlementExists) {
+        await transaction.request()
+          .input("sid", sql.UniqueIdentifier, settlementId)
+          .query("DELETE FROM SettlementItemDetail WHERE SettlementID = @sid");
+      }
+
+      for (const item of dbItems) {
+        await transaction.request()
+          .input("sid", sql.UniqueIdentifier, settlementId)
+          .input("dishId", sql.UniqueIdentifier, item.DishId || null)
+          .input("dishName", sql.NVarChar(255), item.DishName || "Unknown")
+          .input("qty", sql.Int, item.Quantity || 1)
+          .input("price", sql.Decimal(18, 2), item.PricePerUnit || 0)
+          .input("catId", sql.UniqueIdentifier, item.CategoryId || null)
+          .input("catName", sql.NVarChar(255), item.CategoryName || "")
+          .input("groupName", sql.NVarChar(255), item.DishGroupName || "")
+          .query(`
+                      INSERT INTO SettlementItemDetail (
+                          SettlementID, DishId, DishName, Qty, Price, Status, OrderDateTime,
+                          CategoryId, CategoryName, SubCategoryName, start_date
+                      ) VALUES (
+                          @sid, @dishId, @dishName, @qty, @price, 'NORMAL', GETDATE(),
+                          @catId, @catName, @groupName,
+                          (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
+                      )
+                  `);
+      }
+      console.log(`✅ [PAYMENT] ${dbItems.length} SettlementItemDetail(s) inserted`);
     }
 
-    // ── STEP 7: UPDATE TABLEC MASTER ─────────────────────────────────────────
+    // ── STEP 6: UPSERT PAYMENT DETAIL ─────────────────────────────────────────
+    if (isYeahPay) {
+      const paymodeRes = await transaction.request()
+        .input("payMode", sql.NVarChar(50), pMethod)
+        .query(`SELECT TOP 1 Position FROM Paymode WHERE UPPER(LTRIM(RTRIM(PayMode))) = UPPER(LTRIM(RTRIM(@payMode)))`);
+      const paymodePosition = paymodeRes.recordset[0]?.Position || 3;
+
+      const existingPayment = await transaction.request()
+        .input("orderId", sql.UniqueIdentifier, guidOrderId)
+        .query("SELECT PaymentId FROM PaymentDetailCur WHERE OrderId = @orderId");
+
+      if (existingPayment.recordset.length > 0) {
+        await transaction.request()
+          .input("orderId", sql.UniqueIdentifier, guidOrderId)
+          .input("paymode", sql.Int, paymodePosition)
+          .input("amount", sql.Decimal(18, 2), amount)
+          .input("extraCharge", sql.Numeric(18, 2), extraCharge)
+          .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
+          .query(`
+                    UPDATE PaymentDetailCur
+                    SET PaymentCollectedOn = GETDATE(), Paymode = @paymode, Amount = @amount,
+                        PaymodeServiceChargeAmount = @extraCharge, ModifiedBy = @userId, ModifiedOn = GETDATE()
+                    WHERE OrderId = @orderId
+                `);
+        console.log(`✅ [PAYMENT] PaymentDetailCur updated`);
+      } else {
+        await transaction.request()
+          .input("paymentId", sql.UniqueIdentifier, settlementId)
+          .input("restaurantBillId", sql.UniqueIdentifier, settlementId)
+          .input("orderId", sql.UniqueIdentifier, guidOrderId)
+          .input("paymode", sql.Int, paymodePosition)
+          .input("amount", sql.Decimal(18, 2), amount)
+          .input("extraCharge", sql.Numeric(18, 2), extraCharge)
+          .input("bizId", sql.UniqueIdentifier, businessUnitId)
+          .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
+          .query(`
+                    INSERT INTO PaymentDetailCur (
+                        PaymentId, RestaurantBillId, OrderId, BilledFor, 
+                        PaymentCollectedOn, PaymentType, Paymode, Amount,
+                        PaymodeServiceChargeAmount, BusinessUnitId, CreatedBy, CreatedOn, ModifiedBy, ModifiedOn
+                    ) VALUES (
+                        @paymentId, @restaurantBillId, @orderId, 1,
+                        GETDATE(), 1, @paymode, @amount,
+                        @extraCharge, @bizId, @userId, GETDATE(), @userId, GETDATE()
+                    ) 
+                `);
+        console.log(`✅ [PAYMENT] PaymentDetailCur inserted`);
+      }
+    }
+
+    // ── STEP 7: UPDATE TABLE MASTER ─────────────────────────────────────────
     if (cleanTableId) {
       await transaction.request()
         .input("tid", sql.UniqueIdentifier, cleanTableId)
+        .input("payStatus", sql.Int, isPaidOrder ? 1 : 0)
         .query(`
                     UPDATE TableMaster
-                    SET PAYMENT_STATUS = 1,
+                    SET PAYMENT_STATUS = @payStatus,
                         Status = 2,
                         entry_status = 'q',
                         ModifiedOn = GETDATE()
                     WHERE TableId = @tid
                 `);
-      console.log(`✅ [PAYMENT] TableMaster updated`);
+      console.log(`✅ [PAYMENT] TableMaster updated (PAYMENT_STATUS=${isPaidOrder ? 1 : 0})`);
     }
 
     // ── STEP 8: ARCHIVE ORDER ────────────────────────────────────────────────
@@ -2451,10 +2001,10 @@ router.post("/complete-online-payment", async (req, res) => {
                 UPDATE RestaurantOrderCur SET TotalAmount = @totalAmt, ModifiedOn = GETDATE() 
                 WHERE OrderNumber = @orderNo;
 
-                -- Archive to RestaurantOrder (if not exists)
+                ${isPaidOrder ? `
+                -- Archive to RestaurantOrder (only for paid digital orders)
                 IF NOT EXISTS (SELECT 1 FROM RestaurantOrder WHERE OrderNumber = @orderNo)
                 BEGIN
-                    -- ✅ Check if TotalAmount column exists in RestaurantOrder
                     IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('RestaurantOrder') AND name = 'TotalAmount')
                     BEGIN
                         INSERT INTO RestaurantOrder (
@@ -2478,6 +2028,7 @@ router.post("/complete-online-payment", async (req, res) => {
                         FROM RestaurantOrderCur WHERE OrderNumber = @orderNo;
                     END
                 END
+                ` : ''}
 
                 -- Archive details (only rows not already archived)
                 INSERT INTO RestaurantOrderDetail (
@@ -2487,7 +2038,7 @@ router.post("/complete-online-payment", async (req, res) => {
                 )
                 SELECT 
                     d.OrderDetailId, d.OrderId, d.DishId, d.Description, d.DishName, d.Quantity, 
-                    d.PricePerUnit, d.ActualAmount, d.TotalDetailLineAmount, 3, 
+                    d.PricePerUnit, d.ActualAmount, d.TotalDetailLineAmount, 2, 
                     d.CreatedBy, d.CreatedOn, d.BusinessUnitId, d.OrderDateTime
                 FROM RestaurantOrderDetailCur d
                 WHERE d.OrderId = (SELECT OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo)
@@ -2495,79 +2046,35 @@ router.post("/complete-online-payment", async (req, res) => {
                       SELECT 1 FROM RestaurantOrderDetail rd WHERE rd.OrderDetailId = d.OrderDetailId
                   );
             `);
-    console.log(`✅ [PAYMENT] Order archived`);
-
     await transaction.commit();
-    console.log(`✅ [PAYMENT] ✅✅✅ ALL COMPLETE for order ${orderId}`);
-
-    // ── KIOSK CUSTOMER: SAVE / UPDATE DEFAULT DISH ID AFTER PAYMENT ──
-    if (kioskCarNumber && String(kioskCarNumber).trim()) {
-      try {
-        const cleanCar = String(kioskCarNumber).trim().toUpperCase();
-        const cleanName = (kioskCustomerName && String(kioskCustomerName).trim()) || "Guest";
-        const dishIdToSave = defaultDishId || (cart && cart.length > 0 ? (cart[0].DishId || cart[0].id) : null);
-
-        if (dishIdToSave) {
-          const custCheck = await pool.request()
-            .input("carNo", sql.NVarChar(50), cleanCar)
-            .query(`
-              SELECT TOP 1 CustomerVehicleId, CarNumber, CustomerName
-              FROM kioskCustomer
-              WHERE UPPER(LTRIM(RTRIM(CarNumber))) = @carNo
-            `);
-
-          if (custCheck.recordset.length > 0) {
-            const existingVehId = custCheck.recordset[0].CustomerVehicleId;
-            await pool.request()
-              .input("vehId", sql.UniqueIdentifier, existingVehId)
-              .input("dishId", sql.NVarChar(100), String(dishIdToSave))
-              .input("custName", sql.NVarChar(150), cleanName)
-              .query(`
-                UPDATE kioskCustomer
-                SET DefaultDishId = @dishId,
-                    CustomerName = COALESCE(@custName, CustomerName),
-                    UpdatedOn = GETDATE(),
-                    IsActive = 1
-                WHERE CustomerVehicleId = @vehId
-              `);
-            console.log(`✅ [PAYMENT] Updated kioskCustomer ${cleanCar} with DefaultDishId: ${dishIdToSave}`);
-          } else {
-            await pool.request()
-              .input("carNo", sql.NVarChar(50), cleanCar)
-              .input("custName", sql.NVarChar(150), cleanName)
-              .input("dishId", sql.NVarChar(100), String(dishIdToSave))
-              .query(`
-                INSERT INTO kioskCustomer (
-                  CustomerVehicleId, CustomerName, CarNumber, DefaultDishId, IsActive, CreatedOn
-                ) VALUES (
-                  NEWID(), @custName, @carNo, @dishId, 1, GETDATE()
-                )
-              `);
-            console.log(`✅ [PAYMENT] Inserted new kioskCustomer ${cleanCar} with DefaultDishId: ${dishIdToSave}`);
-          }
-        }
-      } catch (kioskCustErr) {
-        console.error("⚠️ Failed to save/update kioskCustomer after payment:", kioskCustErr.message);
-      }
-    }
-
-    // KOT already generated before transaction began to ensure only new items print
+    console.log(`✅ [PAYMENT] Transaction committed for order ${orderId}`);
 
     try {
-      // Also print checkout receipt for online payments
-      await generateAndQueueReceipt(orderId, "ONLINE");
+      // ✅ Queue KOT once using OrderNumber only
+      await generateAndQueueKOTs(orderId);
+    } catch (err) {
+      console.error("Failed to queue KOT for online payment:", err);
+    }
+
+    try {
+      // ✅ Queue receipt once using OrderNumber only
+      await generateAndQueueReceipt(orderId, pMethod, extraCharge);
     } catch (err) {
       console.error("Failed to queue receipt:", err);
     }
 
-    if (req.io) {
-      req.io.emit("qr-print-request", {
+    console.log(`✅ [PAYMENT] ✅✅✅ ALL COMPLETE for order ${orderId}`);
+
+    const io = req.io || req.app?.get("io");
+    if (io) {
+      io.emit("qr-print-request", {
         orderId: orderId,
         source: "QR",
         paymentType: "online",
-        printKOT: false,
-        printBill: false
+        printKOT: true,
+        printBill: true
       });
+      io.emit("kot_printed", { tableId: cleanTableId, orderId: orderId });
     }
 
     res.json({
@@ -2588,145 +2095,297 @@ router.post("/complete-online-payment", async (req, res) => {
   }
 });
 
-/**
- * POST /api/order/assign-takeaway-table
- * Called after login to assign an available takeaway table to the session.
- * Returns { success, tableId, tableNumber, orderId }
- */
-router.post("/assign-takeaway-table", async (req, res) => {
+router.post("/clear-cart", async (req, res) => {
   try {
-    const pool = await poolPromise;
+    const { orderId } = req.body;
 
-    // Find a free takeaway table (DiningSection = 4, Status = 0 = available)
-    const tableRes = await pool.request().query(`
-      SELECT TOP 1 TableId, TableNumber
-      FROM TableMaster
-      WHERE DiningSection = 4
-        AND (Status = 0 OR Status IS NULL)
-        AND (CurrentOrderId IS NULL OR CurrentOrderId = '' OR CurrentOrderId = 'NEW')
-      ORDER BY TableNumber ASC
-    `);
-
-    if (tableRes.recordset.length === 0) {
-      // Fallback: return any takeaway table even if occupied
-      const fallbackRes = await pool.request().query(`
-        SELECT TOP 1 TableId, TableNumber, CurrentOrderId
-        FROM TableMaster
-        WHERE DiningSection = 4
-        ORDER BY TableNumber ASC
-      `);
-
-      if (fallbackRes.recordset.length === 0) {
-        return res.status(200).json({
-          success: false,
-          message: "No takeaway tables are configured. Please contact staff."
-        });
-      }
-
-      const fb = fallbackRes.recordset[0];
-      return res.json({
-        success: true,
-        tableId: fb.TableId,
-        tableNumber: fb.TableNumber,
-        orderId: fb.CurrentOrderId || "NEW"
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        error: "orderId missing"
       });
     }
 
-    const table = tableRes.recordset[0];
-    const tableId = table.TableId;
-    const tableNumber = table.TableNumber;
+    const pool = await poolPromise;
 
-    // Generate a new order ID for this session
-    let orderId;
-    try {
-      orderId = await getOrGenerateOrderId(req, String(tableId));
-    } catch (_) {
-      orderId = "NEW";
-    }
+    // Delete modifiers first
+    await pool.request()
+      .input("orderId", sql.NVarChar(100), orderId)
+      .query(`
+        DELETE FROM RestaurantmodifierdetailCur
+        WHERE OrderDetailId IN (
+          SELECT OrderDetailId
+          FROM RestaurantOrderDetailCur
+          WHERE OrderId = TRY_CONVERT(uniqueidentifier, @orderId)
+        )
+      `);
 
-    return res.json({
+    // Delete cart items
+    await pool.request()
+      .input("orderId", sql.NVarChar(100), orderId)
+      .query(`
+        DELETE FROM RestaurantOrderDetailCur
+        WHERE OrderId = TRY_CONVERT(uniqueidentifier, @orderId)
+      `);
+
+    // Clear order total
+    await pool.request()
+      .input("orderId", sql.NVarChar(100), orderId)
+      .query(`
+        UPDATE RestaurantOrderCur
+        SET TotalAmount = 0
+        WHERE OrderId = TRY_CONVERT(uniqueidentifier, @orderId)
+      `);
+
+    res.json({
       success: true,
-      tableId,
-      tableNumber,
-      orderId
+      message: "Cart cleared successfully"
     });
 
   } catch (err) {
-    console.error("❌ [assign-takeaway-table] ERROR:", err.message);
-    res.status(500).json({ success: false, message: err.message });
+    console.error("CLEAR CART ERROR:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
-/**
- * POST /api/order/assign-eatin-table
- * Called to assign an available dine-in/eat-in table to the session.
- */
-router.post("/assign-eatin-table", async (req, res) => {
+router.get("/kiosk/customer/:carNumber", async (req, res) => {
   try {
+    const { carNumber } = req.params;
+
     const pool = await poolPromise;
 
-    // Find a free eat-in table (DiningSection != 4, Status = 0 = available)
-    const tableRes = await pool.request().query(`
-      SELECT TOP 1 TableId, TableNumber
-      FROM TableMaster
-      WHERE DiningSection != 4
-        AND (Status = 0 OR Status IS NULL)
-        AND (CurrentOrderId IS NULL OR CurrentOrderId = '' OR CurrentOrderId = 'NEW')
-      ORDER BY TableNumber ASC
-    `);
-
-    if (tableRes.recordset.length === 0) {
-      // Fallback: return any eat-in table even if occupied
-      const fallbackRes = await pool.request().query(`
-        SELECT TOP 1 TableId, TableNumber, CurrentOrderId
-        FROM TableMaster
-        WHERE DiningSection != 4
-        ORDER BY TableNumber ASC
+    const result = await pool.request()
+      .input("CarNumber", sql.NVarChar(50), carNumber.trim())
+      .query(`
+        SELECT TOP 1
+          CustomerVehicleId,
+          CustomerName,
+          CarNumber,
+          MobileNumber,
+          VehicleType,
+          DefaultDishId
+        FROM kioskCustomer
+        WHERE CarNumber = @CarNumber
+          AND IsActive = 1
       `);
 
-      if (fallbackRes.recordset.length === 0) {
-        return res.status(200).json({
-          success: false,
-          message: "No eat-in tables are configured. Please contact staff."
-        });
-      }
-
-      const fb = fallbackRes.recordset[0];
+    if (result.recordset.length === 0) {
       return res.json({
         success: true,
-        tableId: fb.TableId,
-        tableNumber: fb.TableNumber,
-        orderId: fb.CurrentOrderId || "NEW"
+        exists: false,
+        customer: null
       });
-    }
-
-    const table = tableRes.recordset[0];
-    const tableId = table.TableId;
-    const tableNumber = table.TableNumber;
-
-    // Generate a new order ID for this session
-    let orderId;
-    try {
-      orderId = await getOrGenerateOrderId(req, String(tableId));
-    } catch (_) {
-      orderId = "NEW";
     }
 
     return res.json({
       success: true,
-      tableId,
-      tableNumber,
-      orderId
+      exists: true,
+      customer: result.recordset[0]
     });
 
+  } catch (error) {
+    console.error("Kiosk customer search error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "Unable to search customer."
+    });
+  }
+});
+
+router.get("/kiosk/customers", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+
+    const result = await pool.request().query(`
+      SELECT
+        CustomerVehicleId,
+        CustomerName,
+        CarNumber,
+        MobileNumber,
+        VehicleType,
+        DefaultDishId
+      FROM kioskCustomer
+      WHERE IsActive = 1
+      ORDER BY CreatedOn DESC
+    `);
+
+    return res.json({
+      success: true,
+      customers: result.recordset
+    });
+
+  } catch (error) {
+    console.error("Kiosk customers search error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "Unable to load customers."
+    });
+  }
+});
+
+
+// ── SAVE/UPDATE KIOSK CUSTOMER ──────────────────────────────────────────
+router.post("/kiosk/customer/save", async (req, res) => {
+  try {
+    const { customerVehicleId, carNumber, customerName, defaultDishId, mobileNumber, vehicleType } = req.body;
+
+    if (!carNumber || !carNumber.trim()) {
+      return res.status(400).json({ success: false, error: "carNumber is required" });
+    }
+
+    const pool = await poolPromise;
+    const cleanCar = carNumber.trim();
+    const cleanName = customerName ? customerName.trim() : cleanCar;
+    const dishGuid = defaultDishId ? String(defaultDishId).replace(/^\{|\}$/g, "").trim() : null;
+
+    let existingId = customerVehicleId ? String(customerVehicleId).replace(/^\{|\}$/g, "").trim() : null;
+
+    if (!existingId) {
+      const checkRes = await pool.request()
+        .input("car", sql.NVarChar(50), cleanCar)
+        .query("SELECT TOP 1 CustomerVehicleId FROM kioskCustomer WHERE CarNumber = @car");
+      if (checkRes.recordset.length > 0) {
+        existingId = checkRes.recordset[0].CustomerVehicleId;
+      }
+    }
+
+    if (existingId) {
+      await pool.request()
+        .input("id", sql.UniqueIdentifier, existingId)
+        .input("car", sql.NVarChar(50), cleanCar)
+        .input("name", sql.NVarChar(255), cleanName)
+        .input("dishId", dishGuid ? sql.UniqueIdentifier : sql.NVarChar, dishGuid)
+        .input("mobile", sql.NVarChar(50), mobileNumber || null)
+        .input("type", sql.NVarChar(50), vehicleType || null)
+        .query(`
+          UPDATE kioskCustomer
+          SET CarNumber = @car,
+              CustomerName = @name,
+              DefaultDishId = @dishId,
+              MobileNumber = COALESCE(@mobile, MobileNumber),
+              VehicleType = COALESCE(@type, VehicleType),
+              IsActive = 1,
+              UpdatedOn = GETDATE()
+          WHERE CustomerVehicleId = @id
+        `);
+
+      return res.json({ success: true, customerVehicleId: existingId, updated: true });
+    } else {
+      const newId = crypto.randomUUID();
+      await pool.request()
+        .input("id", sql.UniqueIdentifier, newId)
+        .input("car", sql.NVarChar(50), cleanCar)
+        .input("name", sql.NVarChar(255), cleanName)
+        .input("dishId", dishGuid ? sql.UniqueIdentifier : sql.NVarChar, dishGuid)
+        .input("mobile", sql.NVarChar(50), mobileNumber || null)
+        .input("type", sql.NVarChar(50), vehicleType || null)
+        .query(`
+          INSERT INTO kioskCustomer (
+            CustomerVehicleId, CustomerName, CarNumber, MobileNumber, VehicleType,
+            DefaultDishId, IsActive, CreatedOn
+          ) VALUES (
+            @id, @name, @car, @mobile, @type,
+            @dishId, 1, GETDATE()
+          )
+        `);
+
+      return res.json({ success: true, customerVehicleId: newId, created: true });
+    }
+  } catch (error) {
+    console.error("Kiosk customer save error:", error);
+    return res.status(500).json({ success: false, error: "Failed to save kiosk customer." });
+  }
+});
+
+// ── GET ORDER ITEMS (FOR RECEIPT / REPRINT / SETTLEMENT DETAILS) ───────────
+router.get("/order-items/:orderId", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const pool = await poolPromise;
+
+    const result = await pool.request()
+      .input("orderNo", sql.NVarChar(50), orderId)
+      .query(`
+        SELECT
+            d.OrderDetailId,
+            d.DishId,
+            d.DishName,
+            d.Description,
+            d.Quantity,
+            d.PricePerUnit,
+            d.ActualAmount,
+            d.TotalDetailLineAmount,
+            d.StatusCode,
+            d.ComboDetailsJSON,
+            d.ModifiersJSON
+        FROM RestaurantOrderDetailCur d
+        WHERE (d.OrderNumber = @orderNo OR d.OrderId = TRY_CONVERT(uniqueidentifier, @orderNo))
+          AND d.StatusCode NOT IN (0)
+        UNION ALL
+        SELECT
+            rd.OrderDetailId,
+            rd.DishId,
+            rd.DishName,
+            rd.Description,
+            rd.Quantity,
+            rd.PricePerUnit,
+            rd.ActualAmount,
+            rd.TotalDetailLineAmount,
+            rd.StatusCode,
+            NULL AS ComboDetailsJSON,
+            NULL AS ModifiersJSON
+        FROM RestaurantOrderDetail rd
+        WHERE (rd.OrderId IN (SELECT OrderId FROM RestaurantOrder WHERE OrderNumber = @orderNo)
+               OR rd.OrderId = TRY_CONVERT(uniqueidentifier, @orderNo))
+          AND NOT EXISTS (
+            SELECT 1 FROM RestaurantOrderDetailCur cd 
+            WHERE (cd.OrderNumber = @orderNo OR cd.OrderId = TRY_CONVERT(uniqueidentifier, @orderNo))
+              AND cd.StatusCode NOT IN (0)
+          )
+      `);
+
+    return res.json({
+      success: true,
+      items: result.recordset
+    });
   } catch (err) {
-    console.error("❌ [assign-eatin-table] ERROR:", err.message);
-    res.status(500).json({ success: false, message: err.message });
+    console.error("Get order items error:", err);
+    return res.status(500).json({ success: false, error: "Failed to fetch order items." });
+  }
+});
+
+// ── REPRINT KOT ──────────────────────────────────────────────────────────
+router.post("/reprint-kot", async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    if (!orderId) {
+      return res.status(400).json({ success: false, error: "orderId is required" });
+    }
+
+    await generateAndQueueKOTs(orderId);
+
+    const io = req.io || req.app?.get("io");
+    if (io) {
+      io.emit("qr-print-request", {
+        orderId: orderId,
+        source: "QR",
+        type: "KOT_REPRINT",
+      });
+    }
+
+    return res.json({ success: true, message: `KOT reprint queued for order ${orderId}` });
+  } catch (err) {
+    console.error("Reprint KOT error:", err);
+    return res.status(500).json({ success: false, error: "Failed to reprint KOT." });
   }
 });
 
 module.exports = router;
-
 
 
 

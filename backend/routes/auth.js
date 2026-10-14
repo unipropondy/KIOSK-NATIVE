@@ -8,41 +8,40 @@ const { poolPromise, sql } = require("../config/db");
 router.get("/promo-image", async (req, res) => {
   try {
     const pool = await poolPromise;
+    let promoImages = [];
 
-    const result = await pool.request().query(`
-      SELECT 
-        PromoCode,
-        PromoName,
-        DiscountType,
-        DiscountValue,
-        PromoImage
-      FROM PromoCodeMaster
-      WHERE IsActive = 1
-        AND PromoImage IS NOT NULL
-      ORDER BY CreatedDate DESC
-    `);
+    try {
+      const result = await pool.request().query(`
+        SELECT 
+          PromoCode,
+          PromoName,
+          DiscountType,
+          DiscountValue,
+          PromoImage
+        FROM PromoCodeMaster
+        WHERE IsActive = 1
+          AND PromoImage IS NOT NULL
+        ORDER BY CreatedDate DESC
+      `);
 
-    if (result.recordset.length === 0) {
-      return res.json({ success: true, promoImages: [] });
+      if (result.recordset.length > 0) {
+        promoImages = result.recordset.map((promo) => ({
+          PromoCode: promo.PromoCode,
+          PromoName: promo.PromoName,
+          DiscountType: promo.DiscountType,
+          DiscountValue: promo.DiscountValue,
+          PromoImage: promo.PromoImage
+            ? `data:image/jpeg;base64,${promo.PromoImage.toString("base64")}`
+            : null
+        }));
+      }
+    } catch (dbErr) {
+      console.log("PromoCodeMaster table query skipped:", dbErr.message);
     }
 
-    const promoImages = result.recordset.map((promo) => ({
-      PromoCode: promo.PromoCode,
-      PromoName: promo.PromoName,
-      DiscountType: promo.DiscountType,
-      DiscountValue: promo.DiscountValue,
-      PromoImage: promo.PromoImage
-        ? `data:image/jpeg;base64,${promo.PromoImage.toString("base64")}`
-        : null,
-    })).filter((p) => p.PromoImage !== null);
-
-    console.log(`PROMO IMAGE API: returning ${promoImages.length} images`);
-
     res.json({ success: true, promoImages });
-
   } catch (err) {
-    console.error("PROMO IMAGE ERROR:", err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

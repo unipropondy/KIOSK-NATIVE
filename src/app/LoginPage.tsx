@@ -457,7 +457,7 @@ export default function LoginPage({ onLoginSuccess }: Props) {
             </View>
 
             <Text style={[styles.brand, { fontSize: brandFontSize }]}>
-              ISLAND CAR <Text style={styles.brandAccent}>Wash</Text>
+              RED BAY CAR <Text style={styles.brandAccent}>Wash</Text>
             </Text>
             <Text style={styles.subtitle}>Unipro</Text>
 

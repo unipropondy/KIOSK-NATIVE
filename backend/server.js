@@ -43,6 +43,9 @@ app.use("/api/combo", comboRoutes);
 const authRoutes = require("./routes/auth");
 app.use("/api/auth", authRoutes);
 
+const yeahpayRoutes = require("./routes/yeahpayRoutes");
+app.use("/api/yeahpay", yeahpayRoutes);
+
 app.get("/", (req, res) => {
   res.send("POS Backend Running");
 });
@@ -109,15 +112,4 @@ setTimeout(() => {
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on ${PORT}`);
-});
-
-server.on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`\n❌ Port ${PORT} is already in use.`);
-    console.error(`   Run this to free it:  npx kill-port ${PORT}`);
-    console.error(`   Or in PowerShell:     Stop-Process -Id (Get-NetTCPConnection -LocalPort ${PORT}).OwningProcess -Force\n`);
-    process.exit(1);
-  } else {
-    throw err;
-  }
 });

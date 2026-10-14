@@ -99,6 +99,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const [showCartPage, setShowCartPage] = useState(false);
   const [isCartLoading, setIsCartLoading] = useState(false);
   const [search, setSearch] = useState("");
+  const [enableCombo, setEnableCombo] = useState<number>(0);
 
   // Kiosk Session Info
   const [tableNo, setTableNo] = useState("");
@@ -111,6 +112,15 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const [modifiers, setModifiers] = useState<any[]>([]);
   const [selectedModifierIds, setSelectedModifierIds] = useState<string[]>([]);
   const [comboQty, setComboQty] = useState(1);
+
+  // Combo Customizer States
+  const [showComboCustomizer, setShowComboCustomizer] = useState(false);
+  const [comboConfig, setComboConfig] = useState<any>(null);
+  const [comboSelections, setComboSelections] = useState<{ [groupId: string]: any[] }>({});
+  const [comboError, setComboError] = useState<string | null>(null);
+  const [comboLoading, setComboLoading] = useState(false);
+  const [comboDishModifiers, setComboDishModifiers] = useState<any[]>([]);
+  const [selectedComboModifierIds, setSelectedComboModifierIds] = useState<string[]>([]);
 
   // Payment Modal State
   const [showPaymentPopup, setShowPaymentPopup] = useState(false);
@@ -285,7 +295,28 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
           Price: Number(item.price || item.Price || item.PricePerUnit || 0),
           finalPrice: Number(item.price || item.Price || item.PricePerUnit || 0),
           status: item.status || (item.StatusCode === 1 ? "NEW" : "SENT"),
-          selectedMods: item.modifiers || [],
+          selectedMods:
+            item.modifiers ||
+            (item.ModifiersJSON
+              ? (() => {
+                  try {
+                    return JSON.parse(item.ModifiersJSON);
+                  } catch {
+                    return [];
+                  }
+                })()
+              : []),
+          comboSelections:
+            item.comboSelections ||
+            (item.ComboDetailsJSON
+              ? (() => {
+                  try {
+                    return JSON.parse(item.ComboDetailsJSON);
+                  } catch {
+                    return [];
+                  }
+                })()
+              : []),
         }));
         setCart(fromDB);
       }
@@ -316,6 +347,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
         if (settingsRes) {
           setServiceChargePercent(Number(settingsRes.ServiceChargePercentage || 0));
           setGstPercent(Number(settingsRes.GSTPercentage || 0));
+          setEnableCombo(Number(settingsRes.EnableCombo || 0));
         }
 
         if (Array.isArray(paymodesRes)) {
@@ -358,9 +390,14 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const gstAmount = (subTotal + serviceCharge) * (gstPercent / 100);
   const calculatedTotal = (subTotal + serviceCharge + gstAmount).toFixed(2);
 
-  // Open Modifiers or Add Direct
+  // Open Combo Customizer or Modifiers or Add Direct
   const handleDishClick = async (dish: any) => {
     if (dish.IsSoldOut) return;
+
+    if (Number(enableCombo) === 1 && Number(dish.IsCombo) === 1) {
+      await openComboCustomizer(dish);
+      return;
+    }
 
     try {
       const res = await fetch(`${API}/modifiers/${dish.DishId}`);
@@ -381,6 +418,252 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
     } catch (e) {
       addToCartSimple(dish);
     }
+  };
+
+  const openComboCustomizer = async (dish: any) => {
+    setSelectedDish(dish);
+    setComboLoading(true);
+    setComboError(null);
+    setComboSelections({});
+    setComboDishModifiers([]);
+    setSelectedComboModifierIds([]);
+    setComboQty(1);
+    setShowComboCustomizer(true);
+
+    try {
+      const [res, modRes] = await Promise.all([
+        fetch(`${API}/combo/config/${dish.DishId}`),
+        fetch(`${API}/modifiers/${dish.DishId}`).catch(() => null),
+      ]);
+
+      if (modRes && modRes.ok) {
+        const modData = await modRes.json();
+        if (Array.isArray(modData)) {
+          setComboDishModifiers(modData);
+        }
+      }
+
+      if (!res.ok) throw new Error("Failed to load combo options.");
+      const payload = await res.json();
+      if (payload.success && payload.data) {
+        const config = payload.data;
+        setComboConfig(config);
+
+        // Auto-select defaults
+        const initialSelections: { [groupId: string]: any[] } = {};
+        (config.groups || []).forEach((group: any) => {
+          let defaults = (group.options || [])
+            .filter((o: any) => o.isDefault)
+            .map((o: any) => o.dishId);
+          if (!group.isMultiSelect || group.maxSelection === 1) {
+            defaults = defaults.slice(0, 1);
+          }
+          if (
+            defaults.length === 0 &&
+            group.minSelection > 0 &&
+            group.options &&
+            group.options.length > 0
+          ) {
+            defaults = [group.options[0].dishId];
+          }
+          initialSelections[group.comboGroupId] = defaults;
+        });
+        setComboSelections(initialSelections);
+      } else {
+        throw new Error(payload.error || "Failed to load combo config.");
+      }
+    } catch (err: any) {
+      console.error("Combo config fetch error:", err);
+      setComboError(err.message || "Something went wrong.");
+    } finally {
+      setComboLoading(false);
+    }
+  };
+
+  const handleSelectComboOption = (
+    groupId: string,
+    option: any,
+    isMulti: boolean,
+    maxSelect: number
+  ) => {
+    setComboError(null);
+    setComboSelections((prev) => {
+      const current = prev[groupId] || [];
+      if (current.includes(option.dishId)) {
+        return {
+          ...prev,
+          [groupId]: current.filter((id) => id !== option.dishId),
+        };
+      } else {
+        if (isMulti) {
+          if (current.length >= maxSelect) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [groupId]: [...current, option.dishId],
+          };
+        } else {
+          return {
+            ...prev,
+            [groupId]: [option.dishId],
+          };
+        }
+      }
+    });
+  };
+
+  const handleToggleComboModifier = (modId: string) => {
+    setSelectedComboModifierIds((prev) =>
+      prev.includes(modId) ? prev.filter((id) => id !== modId) : [...prev, modId]
+    );
+  };
+
+  const calculateComboTotal = () => {
+    if (!comboConfig && !selectedDish) return 0;
+
+    let totalSurcharge = 0;
+    (comboConfig?.groups || []).forEach((group: any) => {
+      const selectedIds = comboSelections[group.comboGroupId] || [];
+      const selectedOptions = (group.options || []).filter((o: any) =>
+        selectedIds.includes(o.dishId)
+      );
+      selectedOptions.forEach((opt: any) => {
+        totalSurcharge +=
+          (Number(opt.surcharge) || 0) + (Number(opt.dishPrice) || 0);
+      });
+    });
+
+    const chosenModifiers = comboDishModifiers.filter((m: any) =>
+      selectedComboModifierIds.includes(String(m.ModifierID || m.ModifierId || ""))
+    );
+    const modifierPriceTotal = chosenModifiers.reduce(
+      (sum: number, m: any) => sum + (Number(m.Price) || 0),
+      0
+    );
+
+    const basePrice = Number(
+      comboConfig?.basePrice || selectedDish?.Price || selectedDish?.price || 0
+    );
+
+    return basePrice + totalSurcharge + modifierPriceTotal;
+  };
+
+  const handleAddComboToCart = () => {
+    if (!comboConfig || !selectedDish) return;
+
+    // Validate minimum selections
+    for (const group of comboConfig.groups) {
+      const selectedIds = comboSelections[group.comboGroupId] || [];
+      const effectiveMin =
+        group.options && group.options.length > 0 ? group.minSelection : 0;
+      if (selectedIds.length < effectiveMin) {
+        setComboError(
+          `Please pick at least ${group.minSelection} choice(s) for "${group.groupName}"`
+        );
+        return;
+      }
+    }
+
+    // Build selected modifiers list
+    const chosenModifiers = comboDishModifiers
+      .filter((m: any) =>
+        selectedComboModifierIds.includes(String(m.ModifierID || m.ModifierId || ""))
+      )
+      .map((m: any) => ({
+        ModifierID: String(m.ModifierID || m.ModifierId || ""),
+        ModifierName: m.ModifierName,
+        Price: Number(m.Price || 0),
+        qty: 1,
+      }));
+
+    // Build the selection details payload
+    const chosenSelections = comboConfig.groups.map((group: any) => {
+      const selectedIds = comboSelections[group.comboGroupId] || [];
+      const selectedOptions = (group.options || []).filter((o: any) =>
+        selectedIds.includes(o.dishId)
+      );
+      return {
+        groupId: group.comboGroupId,
+        groupName: group.groupName,
+        items: selectedOptions.map((o: any) => ({
+          dishId: o.dishId,
+          name: o.name,
+          surcharge: o.surcharge,
+          dishPrice: o.dishPrice || 0,
+          KitchenTypeCode: o.KitchenTypeCode,
+          KitchenTypeName: o.KitchenTypeName,
+          PrinterIP: o.PrinterIP,
+        })),
+      };
+    });
+
+    // Sum surcharges and dish prices
+    let totalSurcharge = 0;
+    chosenSelections.forEach((grp: any) => {
+      grp.items.forEach((opt: any) => {
+        totalSurcharge +=
+          (Number(opt.surcharge) || 0) + (Number(opt.dishPrice) || 0);
+      });
+    });
+
+    const modifierPriceTotal = chosenModifiers.reduce(
+      (sum: number, m: any) => sum + (Number(m.Price) || 0),
+      0
+    );
+
+    const comboBasePrice = Number(comboConfig.basePrice);
+    const dishBasePrice = Number(
+      selectedDish?.Price ?? selectedDish?.price ?? 0
+    );
+
+    const finalPrice =
+      (comboBasePrice > 0 ? comboBasePrice : dishBasePrice) +
+      totalSurcharge +
+      modifierPriceTotal;
+
+    const newCartItem = {
+      ...selectedDish,
+      DishId: selectedDish.DishId || selectedDish.id,
+      Name: selectedDish.Name || selectedDish.name,
+      qty: comboQty,
+      isCombo: true,
+      price: finalPrice,
+      Price: finalPrice,
+      finalPrice: finalPrice,
+      basePrice: comboConfig.basePrice,
+      comboSelections: chosenSelections,
+      selectedMods: chosenModifiers,
+      modifiers: chosenModifiers,
+      status: "NEW",
+    };
+
+    setCart((prev) => {
+      const existing = prev.find(
+        (item) =>
+          (item.DishId || item.id) === (selectedDish.DishId || selectedDish.id) &&
+          (item.comboSelections || []).length === 0 &&
+          JSON.stringify(item.selectedMods || []) ===
+            JSON.stringify(chosenModifiers) &&
+          item.status !== "SENT"
+      );
+
+      if (existing) {
+        return prev.map((item) =>
+          item === existing
+            ? {
+                ...item,
+                qty: (item.qty || 1) + comboQty,
+                status: "NEW",
+              }
+            : item
+        );
+      }
+
+      return [...prev, newCartItem];
+    });
+
+    setShowComboCustomizer(false);
   };
 
   const addToCartSimple = (dish: any) => {
@@ -404,11 +687,16 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
         {
           ...dish,
           DishId: dish.DishId,
+          id: dish.DishId,
           Name: dish.Name,
+          name: dish.Name,
+          dishName: dish.Name,
           qty: 1,
           Price: basePrice,
+          price: basePrice,
           finalPrice: basePrice,
           selectedMods: [],
+          comboSelections: [],
           status: "NEW",
         },
       ];
@@ -429,11 +717,16 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
       {
         ...selectedDish,
         DishId: selectedDish.DishId,
+        id: selectedDish.DishId,
         Name: selectedDish.Name,
+        name: selectedDish.Name,
+        dishName: selectedDish.Name,
         qty: comboQty,
         Price: finalPrice,
+        price: finalPrice,
         finalPrice: finalPrice,
         selectedMods: chosenMods,
+        comboSelections: [],
         status: "NEW",
       },
     ]);
@@ -474,11 +767,32 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   };
 
   // Checkout / Place Order Flow
-  const handleProceedToPayment = () => {
+  const handleProceedToPayment = async () => {
     console.log("Cart items:", cart);
     console.log("Subtotal:", subTotal);
     console.log("Calculated Total:", calculatedTotal);
     setTotalAmount(calculatedTotal);
+
+    // Save cart items to database (RestaurantOrderCur & RestaurantOrderDetailCur) immediately
+    if (cart.length > 0) {
+      try {
+        const orderId = currentOrderId || (await AsyncStorage.getItem("kioskOrderId"));
+        await fetch(`${API}/order/save-cart`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tableId: tableId || "TAKEAWAY",
+            orderId: orderId,
+            items: cart,
+            userId: "00000000-0000-0000-0000-000000000000",
+          }),
+        });
+        console.log("✅ [Checkout] Cart synced to RestaurantOrderDetailCur");
+      } catch (err) {
+        console.warn("⚠️ [Checkout] Cart sync error:", err);
+      }
+    }
+
     setShowPaymentPopup(true);
   };
 
@@ -982,32 +1296,29 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                       {item.selectedMods.map((m: any) => m.ModifierName).join(", ")}
                     </Text>
                   )}
+                  {item.comboSelections?.length > 0 && (
+                    <View style={styles.comboSelectionsCartBox}>
+                      {item.comboSelections.map((grp: any, gIdx: number) => (
+                        <View key={gIdx} style={{ marginTop: 3 }}>
+                          <Text style={styles.comboGroupNameCart}>{grp.groupName}:</Text>
+                          {(grp.items || []).map((opt: any, oIdx: number) => (
+                            <Text key={oIdx} style={styles.comboItemNameCart}>
+                              ↳ {opt.name}
+                              {(Number(opt.surcharge || 0) + Number(opt.dishPrice || 0)) > 0
+                                ? ` (+${(Number(opt.surcharge || 0) + Number(opt.dishPrice || 0)).toFixed(2)})`
+                                : ""}
+                            </Text>
+                          ))}
+                        </View>
+                      ))}
+                    </View>
+                  )}
                 </View>
 
                 <View style={styles.cartItemCenter}>
-                  {isServiceCategoryItem(item) ? (
-                    <View style={styles.qtyControlsContainer}>
-                      <Text style={[styles.qtyVal, { fontSize: 16, fontWeight: '700' }]}>{item.qty || 1}</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.qtyControlsContainer}>
-                      <TouchableOpacity
-                        style={styles.qtyBtn}
-                        onPress={() => decreaseQty(index)}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.qtyBtnText}>-</Text>
-                      </TouchableOpacity>
-                      <Text style={styles.qtyVal}>{item.qty || 1}</Text>
-                      <TouchableOpacity
-                        style={styles.qtyBtn}
-                        onPress={() => increaseQty(index)}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.qtyBtnText}>+</Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
+                  <View style={styles.qtyControlsContainer}>
+                    <Text style={[styles.qtyVal, { fontSize: 16, fontWeight: '700' }]}>{item.qty || 1}</Text>
+                  </View>
                 </View>
 
                 <View style={styles.cartItemRight}>
@@ -1289,6 +1600,250 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
             >
               <Text style={styles.yeahPayCancelText}>
                 {yeahPayStatus === "SUCCESS" ? "Close" : "Cancel Payment"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Combo Customizer Full-Screen Modal ── */}
+      <Modal
+        visible={showComboCustomizer && !!selectedDish}
+        animationType="slide"
+        onRequestClose={() => setShowComboCustomizer(false)}
+      >
+        <View style={styles.comboFullScreenContainer}>
+          {/* Close Header */}
+          <View style={styles.comboHeaderBar}>
+            <TouchableOpacity
+              style={styles.comboCloseBtn}
+              onPress={() => setShowComboCustomizer(false)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.comboCloseBtnText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={styles.comboScrollView}
+            contentContainerStyle={styles.comboScrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Dish Header Image / Placeholder */}
+            <View style={styles.comboHeroImgBox}>
+              {selectedDish?.Image ? (
+                <Image
+                  source={{ uri: `${API}/image/${selectedDish.Image}` }}
+                  style={styles.comboHeroImg}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={styles.comboHeroPlaceholder}>
+                  <Text style={{ fontSize: 48 }}>🚗</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Dish Info */}
+            <View style={styles.comboDishInfoBox}>
+              <Text style={styles.comboDishTitle}>
+                {selectedDish?.Name || selectedDish?.name}
+              </Text>
+              <Text style={styles.comboDishPrice}>
+                $
+                {Number(
+                  selectedDish?.Price || selectedDish?.price || 0
+                ).toFixed(2)}
+              </Text>
+              {!!selectedDish?.Description && (
+                <Text style={styles.comboDishDesc}>
+                  {selectedDish.Description}
+                </Text>
+              )}
+            </View>
+
+            {/* Combo Groups & Options */}
+            {comboLoading ? (
+              <View style={styles.comboLoadingBox}>
+                <ActivityIndicator size="large" color="#f97316" />
+                <Text style={styles.comboLoadingText}>Loading options...</Text>
+              </View>
+            ) : comboError && !comboConfig ? (
+              <View style={styles.comboErrorBox}>
+                <Text style={styles.comboErrorText}>{comboError}</Text>
+                <TouchableOpacity
+                  style={styles.comboRetryBtn}
+                  onPress={() => openComboCustomizer(selectedDish)}
+                >
+                  <Text style={styles.comboRetryBtnText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.comboGroupsContainer}>
+                {(comboConfig?.groups || []).map((group: any) => {
+                  const selectedIds = comboSelections[group.comboGroupId] || [];
+                  return (
+                    <View key={group.comboGroupId} style={styles.comboGroupCard}>
+                      <View style={styles.comboGroupHeader}>
+                        <Text style={styles.comboGroupName}>{group.groupName}</Text>
+                        <Text style={styles.comboGroupPickBadge}>
+                          Select{" "}
+                          {group.minSelection === group.maxSelection
+                            ? group.minSelection
+                            : `${group.minSelection} to ${group.maxSelection}`}
+                        </Text>
+                      </View>
+
+                      <View style={styles.comboOptionsGrid}>
+                        {(group.options || []).map((opt: any) => {
+                          const isSelected = selectedIds.includes(opt.dishId);
+                          const totalOptSurcharge =
+                            (Number(opt.surcharge) || 0) +
+                            (Number(opt.dishPrice) || 0);
+
+                          return (
+                            <TouchableOpacity
+                              key={opt.mappingId || opt.dishId}
+                              style={[
+                                styles.comboOptionRow,
+                                isSelected && styles.comboOptionRowSelected,
+                              ]}
+                              onPress={() =>
+                                handleSelectComboOption(
+                                  group.comboGroupId,
+                                  opt,
+                                  group.isMultiSelect,
+                                  group.maxSelection
+                                )
+                              }
+                              activeOpacity={0.8}
+                            >
+                              <View
+                                style={[
+                                  styles.comboRadioCircle,
+                                  isSelected && styles.comboRadioCircleSelected,
+                                ]}
+                              >
+                                {isSelected && (
+                                  <View style={styles.comboRadioDot} />
+                                )}
+                              </View>
+
+                              <View style={styles.comboOptInfo}>
+                                <Text
+                                  style={[
+                                    styles.comboOptName,
+                                    isSelected && styles.comboOptNameSelected,
+                                  ]}
+                                  numberOfLines={2}
+                                >
+                                  {opt.name}
+                                </Text>
+                                <Text style={styles.comboOptPrice}>
+                                  {totalOptSurcharge > 0
+                                    ? `+$${totalOptSurcharge.toFixed(2)}`
+                                    : "$0.00"}
+                                </Text>
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  );
+                })}
+
+                {/* Optional Modifiers for this Combo Dish */}
+                {comboDishModifiers.length > 0 && (
+                  <View style={styles.comboGroupCard}>
+                    <View style={styles.comboGroupHeader}>
+                      <Text style={styles.comboGroupName}>
+                        Modifiers (Optional)
+                      </Text>
+                    </View>
+
+                    <View style={styles.comboOptionsGrid}>
+                      {comboDishModifiers.map((m: any) => {
+                        const mId = String(m.ModifierID || m.ModifierId || "");
+                        const isSelected = selectedComboModifierIds.includes(mId);
+                        return (
+                          <TouchableOpacity
+                            key={mId}
+                            style={[
+                              styles.comboOptionRow,
+                              isSelected && styles.comboOptionRowSelected,
+                            ]}
+                            onPress={() => handleToggleComboModifier(mId)}
+                            activeOpacity={0.8}
+                          >
+                            <View
+                              style={[
+                                styles.comboCheckboxSquare,
+                                isSelected && styles.comboCheckboxSquareSelected,
+                              ]}
+                            >
+                              {isSelected && (
+                                <Text style={styles.comboCheckmark}>✓</Text>
+                              )}
+                            </View>
+
+                            <View style={styles.comboOptInfo}>
+                              <Text
+                                style={[
+                                  styles.comboOptName,
+                                  isSelected && styles.comboOptNameSelected,
+                                ]}
+                                numberOfLines={2}
+                              >
+                                {m.ModifierName}
+                              </Text>
+                              <Text style={styles.comboOptPrice}>
+                                {Number(m.Price) > 0
+                                  ? `+$${Number(m.Price).toFixed(2)}`
+                                  : "$0.00"}
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
+
+                {!!comboError && (
+                  <View style={styles.comboInlineErrorBox}>
+                    <Text style={styles.comboInlineErrorText}>{comboError}</Text>
+                  </View>
+                )}
+              </View>
+            )}
+          </ScrollView>
+
+          {/* Fixed Bottom Bar */}
+          <View style={styles.comboFixedBottomBar}>
+            <View style={styles.comboQtyControls}>
+              <TouchableOpacity
+                style={styles.comboQtyBtn}
+                onPress={() => setComboQty(Math.max(1, comboQty - 1))}
+              >
+                <Text style={styles.comboQtyBtnText}>-</Text>
+              </TouchableOpacity>
+              <Text style={styles.comboQtyVal}>{comboQty}</Text>
+              <TouchableOpacity
+                style={styles.comboQtyBtn}
+                onPress={() => setComboQty(comboQty + 1)}
+              >
+                <Text style={styles.comboQtyBtnText}>+</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.comboAddCartBtn}
+              onPress={handleAddComboToCart}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.comboAddCartBtnText}>
+                Add to Cart ${(calculateComboTotal() * comboQty).toFixed(2)}
               </Text>
             </TouchableOpacity>
           </View>
@@ -2171,5 +2726,308 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#475569",
+  },
+
+  /* Combo Selections in Cart Display */
+  comboSelectionsCartBox: {
+    marginTop: 4,
+    paddingLeft: 2,
+  },
+  comboGroupNameCart: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#f97316",
+    marginBottom: 1,
+  },
+  comboItemNameCart: {
+    fontSize: 12,
+    color: "#4b5563",
+    paddingLeft: 6,
+    lineHeight: 16,
+  },
+
+  /* Combo Customizer Modal Styles */
+  comboFullScreenContainer: {
+    flex: 1,
+    backgroundColor: "#ffffff",
+  },
+  comboHeaderBar: {
+    paddingTop: Platform.OS === "android" ? 36 : 48,
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    backgroundColor: "#ffffff",
+    borderBottomWidth: 1,
+    borderColor: "#f3f4f6",
+    zIndex: 10,
+  },
+  comboCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  comboCloseBtnText: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#374151",
+  },
+  comboScrollView: {
+    flex: 1,
+  },
+  comboScrollContent: {
+    paddingBottom: 110,
+  },
+  comboHeroImgBox: {
+    width: "100%",
+    height: 220,
+    backgroundColor: "#fff7ed",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  comboHeroImg: {
+    width: "100%",
+    height: "100%",
+  },
+  comboHeroPlaceholder: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  comboDishInfoBox: {
+    paddingHorizontal: 24,
+    paddingVertical: 18,
+    borderBottomWidth: 1,
+    borderColor: "#f3f4f6",
+  },
+  comboDishTitle: {
+    fontSize: 24,
+    fontWeight: "900",
+    color: "#111827",
+    marginBottom: 6,
+  },
+  comboDishPrice: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#f97316",
+    marginBottom: 6,
+  },
+  comboDishDesc: {
+    fontSize: 14,
+    color: "#6b7280",
+    lineHeight: 20,
+  },
+  comboLoadingBox: {
+    padding: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+  },
+  comboLoadingText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#6b7280",
+  },
+  comboErrorBox: {
+    padding: 32,
+    alignItems: "center",
+    gap: 14,
+  },
+  comboErrorText: {
+    color: "#ef4444",
+    fontSize: 14,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  comboRetryBtn: {
+    backgroundColor: "#f97316",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  comboRetryBtnText: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  comboGroupsContainer: {
+    padding: 20,
+    gap: 20,
+  },
+  comboGroupCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    padding: 18,
+  },
+  comboGroupHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  comboGroupName: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#1f2937",
+    flex: 1,
+  },
+  comboGroupPickBadge: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#6b7280",
+  },
+  comboOptionsGrid: {
+    gap: 10,
+  },
+  comboOptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: "#e5e7eb",
+    backgroundColor: "#ffffff",
+    gap: 12,
+  },
+  comboOptionRowSelected: {
+    borderColor: "#f97316",
+    backgroundColor: "#fffaf5",
+  },
+  comboRadioCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#d1d5db",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  comboRadioCircleSelected: {
+    borderColor: "#f97316",
+  },
+  comboRadioDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#f97316",
+  },
+  comboCheckboxSquare: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#d1d5db",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  comboCheckboxSquareSelected: {
+    borderColor: "#f97316",
+    backgroundColor: "#f97316",
+  },
+  comboCheckmark: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "900",
+    lineHeight: 14,
+  },
+  comboOptInfo: {
+    flex: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  comboOptName: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#111827",
+    flex: 1,
+    marginRight: 8,
+  },
+  comboOptNameSelected: {
+    color: "#111827",
+    fontWeight: "700",
+  },
+  comboOptPrice: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#6b7280",
+  },
+  comboInlineErrorBox: {
+    backgroundColor: "#fef2f2",
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#fecaca",
+  },
+  comboInlineErrorText: {
+    color: "#ef4444",
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  comboFixedBottomBar: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "#ffffff",
+    borderTopWidth: 1,
+    borderColor: "#e5e7eb",
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === "ios" ? 34 : 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  comboQtyControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#f3f4f6",
+    borderRadius: 14,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  comboQtyBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+  },
+  comboQtyBtnText: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  comboQtyVal: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#111827",
+    paddingHorizontal: 14,
+  },
+  comboAddCartBtn: {
+    flex: 1,
+    height: 48,
+    backgroundColor: "#f97316",
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  comboAddCartBtnText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "800",
   },
 });

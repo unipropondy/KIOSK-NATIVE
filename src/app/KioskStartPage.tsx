@@ -156,11 +156,14 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
         throw new Error(data.error || "Unable to start Kiosk session. Please try again.");
       }
 
+      const assignedTableId = data.tableId || "";
+      const assignedTableNo = data.tableNo || orderType;
+
       // Store the kiosk session info for the ordering screen
       await AsyncStorage.setItem("kioskOrderId", String(data.orderNumber || ""));
       await AsyncStorage.setItem("kioskOrderType", orderType);
-      await AsyncStorage.setItem("tableId", "");
-      await AsyncStorage.setItem("tableNo", orderType);
+      await AsyncStorage.setItem("tableId", assignedTableId);
+      await AsyncStorage.setItem("tableNo", assignedTableNo);
       await AsyncStorage.multiRemove(["orderId", "returnToKioskStart"]);
 
       let currentUser = null;
@@ -181,7 +184,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
       await AsyncStorage.setItem("qr_pos_user", JSON.stringify(guestUser));
 
       if (onStart) {
-        onStart(guestUser, { tableId: "", tableNo: orderType });
+        onStart(guestUser, { tableId: assignedTableId, tableNo: assignedTableNo });
       }
     } catch (err: any) {
       setError(err?.message || "Something went wrong. Please try again.");
@@ -212,7 +215,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
           </View>
           <View style={styles.brandTextGroup}>
             <Text style={styles.brandTitle}>
-              Island <Text style={styles.brandTitleAccent}>Car Wash</Text>
+              Red Bay <Text style={styles.brandTitleAccent}>Car Wash</Text>
             </Text>
             <Text style={styles.brandSubtitle}>Clean Cars. Happier Journeys.</Text>
           </View>

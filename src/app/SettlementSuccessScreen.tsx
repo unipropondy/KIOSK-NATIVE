@@ -147,9 +147,14 @@ export default function SettlementSuccessScreen({
 
   const handleReturn = useCallback(async () => {
     try {
-      await AsyncStorage.removeItem("kioskOrderId");
-      await AsyncStorage.removeItem("kioskOrderType");
-      await AsyncStorage.removeItem("orderId");
+      await AsyncStorage.multiRemove([
+        "kioskOrderId",
+        "kioskOrderType",
+        "orderId",
+        "tableId",
+        "tableNo",
+      ]);
+      await AsyncStorage.setItem("returnToKioskStart", "true");
     } catch (e) {
       console.log("Error clearing storage on return:", e);
     }

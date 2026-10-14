@@ -140,7 +140,7 @@ async function recoverStuckJobs(pool) {
       UPDATE PrintJobQueue
       SET Status = 'PENDING', ErrorMessage = 'Auto-recovered from stuck PROCESSING state'
       WHERE Status = 'PROCESSING'
-        AND ProcessedOn < DATEADD(SECOND, -60, GETDATE())
+        AND ProcessedOn < DATEADD(SECOND, -10, GETDATE())
         AND Attempts < 5
     `);
     if (result.rowsAffected[0] > 0) {

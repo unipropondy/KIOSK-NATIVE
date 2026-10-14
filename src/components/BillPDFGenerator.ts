@@ -60,7 +60,7 @@ export class BillPDFGenerator {
         };
 
         const result = {
-          name: settings.CompanyName || "Island Car Wash & Cafe",
+          name: settings.CompanyName || "Red Bay Car Wash & Cafe",
           address: settings.Address || "",
           gstNo: settings.GSTNo || "",
           gstPercentage: gstPercentage,
@@ -94,7 +94,7 @@ export class BillPDFGenerator {
 
   static getDefaultSettings() {
     return {
-      name: "Island Car Wash & Cafe",
+      name: "Red Bay Car Wash & Cafe",
       address: "",
       gstNo: "",
       gstPercentage: 9,
@@ -373,7 +373,7 @@ export class BillPDFGenerator {
 
           <div class="footer">
             <div style="font-weight: 800; font-size: 13px; margin-bottom: 2mm;">THANK YOU! PLEASE COME AGAIN!</div>
-            <div>ISLAND CAR WASH & CAFE</div>
+            <div>RED BAY CAR WASH & CAFE</div>
           </div>
         </div>
       </body>

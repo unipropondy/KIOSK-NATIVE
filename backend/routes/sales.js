@@ -86,6 +86,7 @@ const parseCsv = (value) => String(value || "")
 const normalizePayMode = (paymentMethod = "CASH") => {
   const raw = String(paymentMethod || "CASH").toUpperCase().trim();
   
+  if (raw.includes("YEAHPAY")) return "YEAHPAY";
   if (raw.includes("CASH") || raw === "CAS") return "CASH";
   if (raw.includes("CARD") || raw.includes("VISA") || raw.includes("MASTER") || raw.includes("AMEX") || raw.includes("DINERS")) return "CARD";
   if (raw.includes("PAYNOW") || raw.includes("GRAB") || raw.includes("FOODPANDA")) return "PAYNOW";
@@ -841,12 +842,13 @@ router.post("/save", async (req, res) => {
           SettlementID, LastSettlementDate, SubTotal, TotalTax, DiscountAmount, DiscountType, 
           BillNo, OrderType, TableNo, Section, MemberId, CashierID, BusinessUnitId, 
           SysAmount, ManualAmount, CreatedBy, CreatedOn, SER_NAME, MobileNo, 
-          VoidItemQty, VoidItemAmount, RoundedBy, ServiceCharge
+          VoidItemQty, VoidItemAmount, RoundedBy, ServiceCharge, start_date
         ) VALUES (
           @SettlementID, GETDATE(), @SubTotal, @TotalTax, @DiscountAmount, @DiscountType, 
           @BillNo, @OrderType, @TableNo, @Section, @MemberId, @CashierID, @BusinessUnitId, 
           @SysAmount, @ManualAmount, @CreatedBy, GETDATE(), @SER_NAME, @MobileNo, 
-          @VoidItemQty, @VoidItemAmount, @RoundedBy, @ServiceCharge
+          @VoidItemQty, @VoidItemAmount, @RoundedBy, @ServiceCharge,
+          (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
         );
 
         -- 2. Insert into RestaurantInvoice (Perfect Sync)
@@ -854,12 +856,13 @@ router.post("/save", async (req, res) => {
           BusinessUnitId, RestaurantBillId, OrderId, BillNumber, OrderDateTime, TimeBilled, 
           TotalLineItemAmount, TotalTax, DiscountAmount, TotalAmount, StatusCode, 
           CreatedBy, CreatedOn, InvoiceDate, ServiceCharge, RoundedBy, TotalAmountLessFreight,
-          PaymentTermCode
+          PaymentTermCode, start_date
         ) VALUES (
           @BusinessUnitId, @SettlementID, @OrderId, @BillNo, GETDATE(), GETDATE(),
           @SubTotal, @TotalTax, @DiscountAmount, @SysAmount, 3,
           @CreatedBy, GETDATE(), CAST(GETDATE() AS DATE), @ServiceCharge, @RoundedBy, @SubTotal,
-          @PayModeCode
+          @PayModeCode,
+          (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
         );
       `);
 
@@ -943,8 +946,9 @@ router.post("/save", async (req, res) => {
             .input("Oil", sql.NVarChar(50), item.oil || "")
             .input("Sugar", sql.NVarChar(50), item.sugar || "")
             .input("OrderDateTime", sql.DateTime, new Date()).query(`
-              INSERT INTO SettlementItemDetail (SettlementID, DishId, DishGroupId, SubCategoryId, CategoryId, DishName, Qty, Price, OrderDateTime, CategoryName, SubCategoryName, Status, Spicy, Salt, Oil, Sugar)
-              VALUES (@SettlementID, @DishId, @DishGroupId, @SubCategoryId, @CategoryId, @DishName, @Qty, @Price, @OrderDateTime, @CategoryName, @SubCategoryName, @Status, @Spicy, @Salt, @Oil, @Sugar)
+              INSERT INTO SettlementItemDetail (SettlementID, DishId, DishGroupId, SubCategoryId, CategoryId, DishName, Qty, Price, OrderDateTime, CategoryName, SubCategoryName, Status, Spicy, Salt, Oil, Sugar, start_date)
+              VALUES (@SettlementID, @DishId, @DishGroupId, @SubCategoryId, @CategoryId, @DishName, @Qty, @Price, @OrderDateTime, @CategoryName, @SubCategoryName, @Status, @Spicy, @Salt, @Oil, @Sugar,
+              (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))
             `);
         }
       }
@@ -977,10 +981,11 @@ router.post("/save", async (req, res) => {
               .query(`
                 INSERT INTO SettlementItemDetail (
                   SettlementID, DishId, DishName, Qty, Price, Status, OrderDateTime,
-                  CategoryId, CategoryName, SubCategoryName
+                  CategoryId, CategoryName, SubCategoryName, start_date
                 ) VALUES (
                   @sid, @dishId, @dishName, @qty, @price, 'VOIDED', GETDATE(),
-                  @catId, @catName, @groupName
+                  @catId, @catName, @groupName,
+                  (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
                 )
               `);
           }
