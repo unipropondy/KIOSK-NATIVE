@@ -84,9 +84,9 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
 
   const isLandscape = screenWidth > screenHeight;
-  const isKioskWide = screenWidth >= 1024;
-  const isWide = screenWidth >= 700;
-  const numColumns = isKioskWide ? 4 : isWide ? 3 : isLandscape ? 2 : 1;
+  const isWide = screenWidth >= 600;
+  // Always 2 columns on tablet/kiosk screen to match reference layout (2 packages per row)
+  const numColumns = 2;
 
   // App States
   const [loading, setLoading] = useState(true);
@@ -1198,7 +1198,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                   </View>
 
                   <View style={styles.dishInfo}>
-                    <Text style={styles.dishName} numberOfLines={1}>
+                    <Text style={styles.dishName} numberOfLines={2}>
                       {item.Name}
                     </Text>
 
@@ -2208,11 +2208,11 @@ const styles = StyleSheet.create({
   dishesList: { paddingTop: 2, paddingBottom: 110, paddingHorizontal: 2 },
   dishCard: {
     flex: 1,
-    margin: 8,
+    margin: 10,
     backgroundColor: "#ffffff",
     borderRadius: 28,
-    paddingVertical: 22,
-    paddingHorizontal: 18,
+    paddingVertical: 26,
+    paddingHorizontal: 22,
     alignItems: "center",
     justifyContent: "flex-start",
     position: "relative",
@@ -2232,30 +2232,30 @@ const styles = StyleSheet.create({
   dishSoldOut: { opacity: 0.5 },
   dishCardHeartWrap: {
     position: "absolute",
-    top: 16,
-    right: 18,
+    top: 18,
+    right: 20,
     zIndex: 2,
   },
   dishCardHeartIcon: {
-    fontSize: 22,
+    fontSize: 24,
     color: "#ef4444",
     fontWeight: "600",
   },
   dishCircularBox: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
     borderWidth: 3,
     borderColor: "#eff6ff",
     backgroundColor: "#f8fafc",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 16,
-    marginTop: 6,
+    marginBottom: 20,
+    marginTop: 8,
     overflow: "hidden",
   },
-  dishImg: { width: "100%", height: "100%", borderRadius: 70 },
-  dishEmoji: { fontSize: 50 },
+  dishImg: { width: "100%", height: "100%", borderRadius: 90 },
+  dishEmoji: { fontSize: 64 },
   soldOutBadge: {
     position: "absolute",
     top: 8,
@@ -2274,51 +2274,51 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   dishName: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: "900",
     color: "#0f172a",
     textAlign: "center",
-    marginBottom: 14,
+    marginBottom: 16,
     letterSpacing: -0.3,
   },
   dishBulletsContainer: {
     width: "100%",
-    paddingHorizontal: 8,
-    marginBottom: 18,
-    gap: 8,
+    paddingHorizontal: 12,
+    marginBottom: 22,
+    gap: 10,
     alignItems: "flex-start",
   },
   dishBulletRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
   },
   checkBadge: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     backgroundColor: "#f97316",
     alignItems: "center",
     justifyContent: "center",
   },
   checkBadgeIcon: {
     color: "#ffffff",
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "900",
   },
   dishBulletText: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: "600",
     color: "#475569",
     flex: 1,
   },
   dishPrice: {
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: "900",
     color: "#f97316",
     textAlign: "center",
     letterSpacing: -0.5,
-    marginTop: 4,
+    marginTop: 6,
   },
   emptyDishes: { padding: 40, alignItems: "center" },
   emptyDishesText: { color: "#9ca3af", fontSize: 15 },
