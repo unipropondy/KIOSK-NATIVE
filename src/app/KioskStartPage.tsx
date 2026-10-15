@@ -98,6 +98,43 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
     return () => pulseLoop.stop();
   }, [pulseAnim]);
 
+  // Preloaded customer list for live typing suggestions
+  const [allCustomers, setAllCustomers] = useState<CustomerItem[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Load all customers for live suggestions
+  const loadCustomers = async () => {
+    try {
+      const res = await fetch(`${API}/order/kiosk/customers`);
+      const data = await res.json();
+      const list: CustomerItem[] = data.customers || [];
+      setAllCustomers(list);
+      setCustomerData(list);
+    } catch (_) {}
+  };
+
+  const onSelectCustomer = async (item: CustomerItem) => {
+    setSelectedCustomer(item);
+    setCustomerData(item);
+    setCustomerName(item.CustomerName || "");
+    setCarNumber((item.CarNumber || "").toUpperCase());
+    setShowSuggestions(false);
+    setShowCustomerListPopup(false);
+
+    if (item.CarNumber) {
+      await AsyncStorage.setItem("kioskCarNumber", item.CarNumber.trim().toUpperCase());
+    }
+    if (item.CustomerName) {
+      await AsyncStorage.setItem("kioskCustomerName", item.CustomerName.trim());
+    }
+    if (item.CustomerVehicleId) {
+      await AsyncStorage.setItem("kioskCustomerVehicleId", String(item.CustomerVehicleId));
+    }
+    if (item.DefaultDishId) {
+      await AsyncStorage.setItem("kioskDefaultDishId", String(item.DefaultDishId));
+    }
+  };
+
   // Search customer from backend by entered Car Number
   const searchCustomer = async () => {
     // Sync ref guard: prevents double-fire even if React state batching lags (web bug)
@@ -112,8 +149,9 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
       setSearchingCustomer(true);
       const res = await fetch(`${API}/order/kiosk/customers`);
       const data = await res.json();
-      const allCustomers: CustomerItem[] = data.customers || [];
-      setCustomerData(allCustomers);
+      const list: CustomerItem[] = data.customers || [];
+      setAllCustomers(list);
+      setCustomerData(list);
       setPopupSearch(cleanCar); // pre-filter by typed car number (empty string = show all)
       setShowCustomerListPopup(true);
     } catch (err: any) {
@@ -199,6 +237,15 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
       })
     : [];
 
+  // Live suggestions for Customer Entry popup as user types
+  const cleanInputCar = carNumber.trim().toUpperCase();
+  const carSuggestions =
+    cleanInputCar.length > 0 && showSuggestions
+      ? allCustomers
+          .filter((c) => (c.CarNumber || "").toUpperCase().includes(cleanInputCar))
+          .slice(0, 8)
+      : [];
+
   return (
     <ImageBackground
       source={require("./assets/images/car_wash_bg.jpg")}
@@ -277,9 +324,11 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
               setCustomerName("");
               setCustomerData(null);
               setSelectedCustomer(null);
+              setShowSuggestions(false);
               setSearchingCustomer(false);
               searchingRef.current = false;
               setShowCustomerPopup(true);
+              loadCustomers();
             }}
             activeOpacity={0.85}
             disabled={loading}
@@ -310,9 +359,11 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
               setCustomerName("");
               setCustomerData(null);
               setSelectedCustomer(null);
+              setShowSuggestions(false);
               setSearchingCustomer(false);
               searchingRef.current = false;
               setShowCustomerPopup(true);
+              loadCustomers();
             }}
             activeOpacity={0.85}
             disabled={loading}
@@ -372,29 +423,77 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
               <Text style={styles.popupTitle}>Customer Entry</Text>
 
               <Text style={styles.inputLabel}>Car Number</Text>
-              <View style={styles.carInputRow}>
-                <TextInput
-                  style={styles.carInput}
-                  value={carNumber}
-                  onChangeText={(val) => {
-                    setCarNumber(val.toUpperCase());
-                    setCustomerData(null);
-                  }}
-                  placeholder="Enter car number"
-                  placeholderTextColor="#9ca3af"
-                  autoCapitalize="characters"
-                />
-                <TouchableOpacity
-                  style={[styles.searchButton, searchingCustomer && { opacity: 0.6 }]}
-                  onPress={searchCustomer}
-                  activeOpacity={0.8}
-                >
-                  {searchingCustomer ? (
-                    <ActivityIndicator size="small" color="#ffffff" />
-                  ) : (
-                    <Text style={styles.searchButtonText}>Search</Text>
-                  )}
-                </TouchableOpacity>
+              <View style={styles.carInputContainer}>
+                <View style={styles.carInputRow}>
+                  <TextInput
+                    style={styles.carInput}
+                    value={carNumber}
+                    onChangeText={(val) => {
+                      const upper = val.toUpperCase();
+                      setCarNumber(upper);
+                      setCustomerData(null);
+                      setSelectedCustomer(null);
+                      setShowSuggestions(true);
+                      if (allCustomers.length === 0) {
+                        loadCustomers();
+                      }
+                    }}
+                    onFocus={() => {
+                      if (carNumber.trim().length > 0) {
+                        setShowSuggestions(true);
+                      }
+                    }}
+                    placeholder="Enter car number"
+                    placeholderTextColor="#9ca3af"
+                    autoCapitalize="characters"
+                  />
+                  <TouchableOpacity
+                    style={[styles.searchButton, searchingCustomer && { opacity: 0.6 }]}
+                    onPress={searchCustomer}
+                    activeOpacity={0.8}
+                  >
+                    {searchingCustomer ? (
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                      <Text style={styles.searchButtonText}>Search</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                {/* Live Suggestions Dropdown */}
+                {carSuggestions.length > 0 && (
+                  <View style={styles.suggestionsContainer}>
+                    <ScrollView
+                      style={styles.suggestionsScroll}
+                      keyboardShouldPersistTaps="handled"
+                      nestedScrollEnabled={true}
+                    >
+                      {carSuggestions.map((item, idx) => (
+                        <TouchableOpacity
+                          key={String(item.CustomerVehicleId || item.CarNumber || idx)}
+                          style={[
+                            styles.suggestionItem,
+                            idx === carSuggestions.length - 1 && styles.suggestionItemLast,
+                          ]}
+                          onPress={() => onSelectCustomer(item)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={styles.suggestionLeft}>
+                            <Text style={styles.suggestionCarNumber}>
+                              {item.CarNumber || "-"}
+                            </Text>
+                            {!!item.CustomerName && (
+                              <Text style={styles.suggestionCustomerName}>
+                                {item.CustomerName}
+                              </Text>
+                            )}
+                          </View>
+                          <Text style={styles.suggestionBadge}>Select</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
               </View>
 
               <Text style={styles.inputLabel}>Customer Name</Text>
@@ -517,26 +616,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
                 renderItem={({ item }) => (
                   <TouchableOpacity
                     style={styles.tableRow}
-                    onPress={async () => {
-                      setSelectedCustomer(item);
-                      setCustomerData(item);
-                      setCustomerName(item.CustomerName || "");
-                      setCarNumber(item.CarNumber || "");
-                      setShowCustomerListPopup(false);
-
-                      if (item.CarNumber) {
-                        await AsyncStorage.setItem("kioskCarNumber", item.CarNumber.trim().toUpperCase());
-                      }
-                      if (item.CustomerName) {
-                        await AsyncStorage.setItem("kioskCustomerName", item.CustomerName.trim());
-                      }
-                      if (item.CustomerVehicleId) {
-                        await AsyncStorage.setItem("kioskCustomerVehicleId", String(item.CustomerVehicleId));
-                      }
-                      if (item.DefaultDishId) {
-                        await AsyncStorage.setItem("kioskDefaultDishId", String(item.DefaultDishId));
-                      }
-                    }}
+                    onPress={() => onSelectCustomer(item)}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.tableCellName}>
@@ -892,6 +972,11 @@ const styles = StyleSheet.create({
     color: "#374151",
     marginBottom: 8,
   },
+  carInputContainer: {
+    position: "relative",
+    zIndex: 30,
+    marginBottom: 18,
+  },
   carInputRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -902,7 +987,62 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     paddingLeft: 14,
     paddingRight: 6,
-    marginBottom: 18,
+  },
+  suggestionsContainer: {
+    marginTop: 6,
+    maxHeight: 180,
+    backgroundColor: "#ffffff",
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: "#ff641f",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 8,
+    overflow: "hidden",
+  },
+  suggestionsScroll: {
+    maxHeight: 180,
+  },
+  suggestionItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+    backgroundColor: "#ffffff",
+  },
+  suggestionItemLast: {
+    borderBottomWidth: 0,
+  },
+  suggestionLeft: {
+    flex: 1,
+    marginRight: 8,
+  },
+  suggestionCarNumber: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#ff641f",
+    letterSpacing: 0.5,
+  },
+  suggestionCustomerName: {
+    fontSize: 13,
+    color: "#4b5563",
+    fontWeight: "500",
+    marginTop: 2,
+  },
+  suggestionBadge: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#ffffff",
+    backgroundColor: "#ff641f",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    overflow: "hidden",
   },
   carInput: {
     flex: 1,

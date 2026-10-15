@@ -1000,7 +1000,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
       const completedId = data.orderId || orderId || "1001";
       setIsCartLoading(false);
       setShowCartPage(false);
-      setKioskThankYouOrderId(completedId);
+      setCart([]);
 
       // Clear session
       await AsyncStorage.multiRemove([
@@ -1012,13 +1012,9 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
         "kioskDefaultDishId",
       ]);
 
-      setTimeout(() => {
-        setKioskThankYouOrderId(null);
-        setCart([]);
-        if (onOrderCompleted) {
-          onOrderCompleted(completedId);
-        }
-      }, 2500);
+      if (onOrderCompleted) {
+        onOrderCompleted(completedId);
+      }
     } catch (err: any) {
       setIsCartLoading(false);
       Alert.alert("Settlement Error", err?.message || "Payment Failed");
@@ -1042,20 +1038,6 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
 
   return (
     <View style={styles.container}>
-      {/* ── Kiosk Thank You Overlay ── */}
-      {!!kioskThankYouOrderId && (
-        <View style={styles.thankYouOverlay}>
-          <Text style={styles.thankYouTitle}>Thank You!</Text>
-          <View style={styles.thankYouCircle}>
-            <Text style={styles.thankYouOrderLabel}>YOUR ORDER NO.</Text>
-            <Text style={styles.thankYouOrderNumber}>
-              {String(kioskThankYouOrderId).replace(/\D/g, "").slice(-4) || kioskThankYouOrderId}
-            </Text>
-          </View>
-          <Text style={styles.thankYouSubtitle}>Please collect your receipt</Text>
-        </View>
-      )}
-
       {/* ── Main Layout: Sidebar & Content ── */}
       <View style={styles.mainLayout}>
         {/* Categories Sidebar */}
