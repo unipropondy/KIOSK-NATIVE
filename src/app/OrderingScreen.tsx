@@ -1850,53 +1850,169 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
         </View>
       </Modal>
 
-      {/* ── Modifiers Modal ── */}
+      {/* ── Modifiers Modal (Full-Screen Design matching Combo Page) ── */}
       <Modal
-        visible={showModifier}
-        transparent
+        visible={showModifier && !!selectedDish}
         animationType="slide"
         onRequestClose={() => setShowModifier(false)}
       >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modModalBox}>
-            <View style={styles.modHeader}>
-              <Text style={styles.modTitle}>{selectedDish?.Name}</Text>
-              <TouchableOpacity onPress={() => setShowModifier(false)}>
-                <Text style={styles.modClose}>✕</Text>
+        <View style={styles.comboFullScreenContainer}>
+          {/* Close Header */}
+          <View style={styles.comboHeaderBar}>
+            <TouchableOpacity
+              style={styles.comboCloseBtn}
+              onPress={() => setShowModifier(false)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.comboCloseBtnText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={styles.comboScrollView}
+            contentContainerStyle={styles.comboScrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Dish Header Image / Placeholder */}
+            <View style={styles.comboHeroImgBox}>
+              {selectedDish?.Image ? (
+                <Image
+                  source={{ uri: `${API}/image/${selectedDish.Image}` }}
+                  style={styles.comboHeroImg}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={styles.comboHeroPlaceholder}>
+                  <Text style={{ fontSize: 48 }}>🍽️</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Dish Info */}
+            <View style={styles.comboDishInfoBox}>
+              <Text style={styles.comboDishTitle}>
+                {selectedDish?.Name || selectedDish?.name}
+              </Text>
+              <Text style={styles.comboDishPrice}>
+                $
+                {Number(
+                  selectedDish?.Price || selectedDish?.price || 0
+                ).toFixed(2)}
+              </Text>
+              {!!selectedDish?.Description && (
+                <Text style={styles.comboDishDesc}>
+                  {selectedDish.Description}
+                </Text>
+              )}
+            </View>
+
+            {/* Modifiers Selection Group */}
+            <View style={styles.comboGroupsContainer}>
+              <View style={styles.comboGroupCard}>
+                <View style={styles.comboGroupHeader}>
+                  <Text style={styles.comboGroupName}>
+                    Choose Custom Add-ons
+                  </Text>
+                  <Text style={styles.comboGroupPickBadge}>Optional</Text>
+                </View>
+
+                <View style={styles.comboOptionsGrid}>
+                  {modifiers.map((item) => {
+                    const id = String(item.ModifierID || item.ModifierId);
+                    const isSelected = selectedModifierIds.includes(id);
+                    const priceNum = Number(item.Price || 0);
+
+                    return (
+                      <TouchableOpacity
+                        key={id}
+                        style={[
+                          styles.comboOptionRow,
+                          isSelected && styles.comboOptionRowSelected,
+                        ]}
+                        onPress={() => {
+                          setSelectedModifierIds((prev) =>
+                            prev.includes(id)
+                              ? prev.filter((x) => x !== id)
+                              : [...prev, id]
+                          );
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <View
+                          style={[
+                            styles.comboCheckboxSquare,
+                            isSelected && styles.comboCheckboxSquareSelected,
+                          ]}
+                        >
+                          {isSelected && (
+                            <Text style={styles.comboCheckmark}>✓</Text>
+                          )}
+                        </View>
+
+                        <View style={styles.comboOptInfo}>
+                          <Text
+                            style={[
+                              styles.comboOptName,
+                              isSelected && styles.comboOptNameSelected,
+                            ]}
+                            numberOfLines={2}
+                          >
+                            {item.ModifierName}
+                          </Text>
+                          <Text style={styles.comboOptPrice}>
+                            {priceNum > 0 ? `+$${priceNum.toFixed(2)}` : "$0.00"}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            </View>
+          </ScrollView>
+
+          {/* Fixed Bottom Bar */}
+          <View style={styles.comboFixedBottomBar}>
+            <View style={styles.comboQtyControls}>
+              <TouchableOpacity
+                style={styles.comboQtyBtn}
+                onPress={() => setComboQty(Math.max(1, comboQty - 1))}
+              >
+                <Text style={styles.comboQtyBtnText}>-</Text>
+              </TouchableOpacity>
+              <Text style={styles.comboQtyVal}>{comboQty}</Text>
+              <TouchableOpacity
+                style={styles.comboQtyBtn}
+                onPress={() => setComboQty(comboQty + 1)}
+              >
+                <Text style={styles.comboQtyBtnText}>+</Text>
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.modPrompt}>Choose Custom Add-ons:</Text>
+            {(() => {
+              const chosenMods = modifiers.filter((m) =>
+                selectedModifierIds.includes(String(m.ModifierID || m.ModifierId))
+              );
+              const extra = chosenMods.reduce(
+                (s, m) => s + Number(m.Price || 0),
+                0
+              );
+              const unitPrice =
+                Number(selectedDish?.Price || selectedDish?.price || 0) + extra;
+              const totalPrice = (unitPrice * comboQty).toFixed(2);
 
-            <FlatList
-              data={modifiers}
-              keyExtractor={(m) => String(m.ModifierID || m.ModifierId)}
-              renderItem={({ item }) => {
-                const isSelected = selectedModifierIds.includes(
-                  String(item.ModifierID || item.ModifierId)
-                );
-                return (
-                  <TouchableOpacity
-                    style={[styles.modOption, isSelected && styles.modOptionActive]}
-                    onPress={() => {
-                      const id = String(item.ModifierID || item.ModifierId);
-                      setSelectedModifierIds((prev) =>
-                        prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-                      );
-                    }}
-                  >
-                    <Text style={styles.modOptName}>{item.ModifierName}</Text>
-                    <Text style={styles.modOptPrice}>
-                      {Number(item.Price) > 0 ? `+$${Number(item.Price).toFixed(2)}` : "Free"}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-
-            <TouchableOpacity style={styles.addModBtn} onPress={addWithModifiers}>
-              <Text style={styles.addModBtnText}>Add to Cart</Text>
-            </TouchableOpacity>
+              return (
+                <TouchableOpacity
+                  style={styles.comboAddCartBtn}
+                  onPress={addWithModifiers}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.comboAddCartBtnText}>
+                    Add to Cart ${totalPrice}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })()}
           </View>
         </View>
       </Modal>

@@ -416,7 +416,7 @@ export default function LoginPage({ onLoginSuccess }: Props) {
             styles.scroll,
             {
               paddingHorizontal: isCompactWidth ? 12 : 16,
-              paddingTop: isVeryShort ? 28 : isCompactHeight ? 36 : 48,
+              paddingTop: Math.max(logoSize * 0.65, isVeryShort ? 42 : isCompactHeight ? 52 : 64),
               paddingBottom: isVeryShort ? 24 : isCompactHeight ? 36 : 48,
             },
           ]}
@@ -429,9 +429,9 @@ export default function LoginPage({ onLoginSuccess }: Props) {
               {
                 width: cardWidth,
                 paddingHorizontal: cardPadding,
-                paddingTop: isVeryShort ? 32 : logoSize <= 78 ? 38 : 46,
+                paddingTop: isVeryShort ? 36 : logoSize <= 78 ? 44 : 52,
                 paddingBottom: isVeryShort ? 16 : isCompactHeight ? 20 : 28,
-                marginTop: isVeryShort ? 20 : logoSize <= 78 ? 26 : 36,
+                marginTop: Math.max(logoSize * 0.55, isVeryShort ? 28 : logoSize <= 78 ? 36 : 46),
                 borderRadius: isCompactWidth ? 24 : 32,
               },
             ]}
