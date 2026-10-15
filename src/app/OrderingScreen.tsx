@@ -1050,88 +1050,69 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
       {/* ── Main Layout: Sidebar & Content ── */}
       <View style={styles.mainLayout}>
         {/* Categories Sidebar */}
-        <View style={[styles.sidebar, isWide ? styles.sidebarWide : styles.sidebarNormal]}>
+        <View style={styles.sidebar}>
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sidebarContent}>
-            {categories.map((cat) => (
-              <TouchableOpacity
-                key={cat.CategoryId}
-                style={[
-                  styles.catCard,
-                  activeCategory === cat.CategoryId && styles.catCardActive,
-                ]}
-                onPress={() => {
-                  setActiveCategory(cat.CategoryId);
-                  if (isCategoryPrevious(cat)) {
-                    loadPreviousCategory();
-                  } else {
-                    loadGroups(cat.CategoryId);
-                  }
-                }}
-                activeOpacity={0.85}
-              >
-                {/* Left accent bar */}
-                <View
+            {categories.map((cat) => {
+              const isActive = activeCategory === cat.CategoryId;
+              return (
+                <TouchableOpacity
+                  key={cat.CategoryId}
                   style={[
-                    styles.catCardBar,
-                    activeCategory === cat.CategoryId && styles.catCardBarActive,
+                    styles.catCard,
+                    isActive && styles.catCardActive,
                   ]}
-                />
-
-                {/* Car Icon with bubbles */}
-                <View style={styles.catIconWrap}>
-                  <Text style={styles.catIconBubbles}>° °</Text>
-                  <Text style={styles.catIconEmoji}>🚗</Text>
-                </View>
-
-                {/* Info: Name & decorative dashed dots */}
-                <View style={styles.catInfoWrap}>
+                  onPress={() => {
+                    setActiveCategory(cat.CategoryId);
+                    if (isCategoryPrevious(cat)) {
+                      loadPreviousCategory();
+                    } else {
+                      loadGroups(cat.CategoryId);
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.catIconText, isActive && styles.catIconTextActive]}>
+                    🚘
+                  </Text>
                   <Text
                     style={[
                       styles.catCardTitle,
-                      activeCategory === cat.CategoryId && styles.catCardTitleActive,
+                      isActive && styles.catCardTitleActive,
                     ]}
-                    numberOfLines={2}
+                    numberOfLines={1}
                   >
                     {cat.KitchenTypeName}
                   </Text>
-                  <View style={styles.catDotRow}>
-                    <View style={[styles.catDot, { backgroundColor: "#f97316" }]} />
-                    <View style={styles.catDot} />
-                    <View style={styles.catDot} />
-                  </View>
-                </View>
-
-                {/* Right arrow chevron */}
-                <View style={styles.catArrowWrap}>
-                  <Text style={styles.catArrowText}>›</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
+                </TouchableOpacity>
+              );
+            })}
           </ScrollView>
         </View>
 
         {/* Content Area */}
         <View style={styles.contentArea}>
-          {/* Hero Banner matching React design */}
+          {/* Hero Banner matching reference design */}
           <View style={styles.heroBanner}>
             <View style={styles.heroIconCircle}>
               <Text style={styles.heroCarEmoji}>🚗</Text>
             </View>
             <View style={styles.heroTextWrap}>
               <Text style={styles.heroCategoryTitle}>
-                {categories.find((c) => c.CategoryId === activeCategory)?.KitchenTypeName || "Packages"}
+                {categories.find((c) => c.CategoryId === activeCategory)?.KitchenTypeName || "Sedan"}
               </Text>
               <Text style={styles.heroSubtitle}>Choose a package for your vehicle</Text>
             </View>
-            {onLogout && (
-              <TouchableOpacity style={styles.heroLogoutBtn} onPress={onLogout}>
-                <Text style={styles.heroLogoutIcon}>↪</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              style={styles.heroMoreBtn}
+              onPress={onLogout}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.heroMoreDots}>•••</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Group Tabs Row */}
-          {groups.length > 0 && (
+          {/* Group Tabs Row (hidden if only 1 generic group) */}
+          {groups.length > 1 && (
             <View style={styles.groupTabsContainer}>
               <ScrollView
                 horizontal
@@ -1191,14 +1172,14 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                 <TouchableOpacity
                   style={[styles.dishCard, item.IsSoldOut && styles.dishSoldOut]}
                   onPress={() => handleDishClick(item)}
-                  activeOpacity={0.85}
+                  activeOpacity={0.88}
                 >
-                  {/* Heart outline icon on top right */}
+                  {/* Red Heart outline icon on top right */}
                   <View style={styles.dishCardHeartWrap}>
                     <Text style={styles.dishCardHeartIcon}>♡</Text>
                   </View>
 
-                  {/* Circular dish image matching kiosk design */}
+                  {/* Circular dish image matching reference design */}
                   <View style={styles.dishCircularBox}>
                     {item.Image ? (
                       <Image
@@ -1217,18 +1198,22 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                   </View>
 
                   <View style={styles.dishInfo}>
-                    <Text style={styles.dishName} numberOfLines={2}>
+                    <Text style={styles.dishName} numberOfLines={1}>
                       {item.Name}
                     </Text>
 
-                    {/* Bullet Points Description */}
+                    {/* Bullet Points Description with Orange Check Mark badge */}
                     <View style={styles.dishBulletsContainer}>
                       {parseDescriptionBullets(
-                        item.Description || "Premium Car Care. Exceptional Service."
+                        item.Description || "Wash + Vacuum + Tyre Shine"
                       ).map((bullet, idx) => (
                         <View key={idx} style={styles.dishBulletRow}>
-                          <Text style={styles.dishBulletDot}>•</Text>
-                          <Text style={styles.dishBulletText}>{bullet}</Text>
+                          <View style={styles.checkBadge}>
+                            <Text style={styles.checkBadgeIcon}>✓</Text>
+                          </View>
+                          <Text style={styles.dishBulletText} numberOfLines={1}>
+                            {bullet}
+                          </Text>
                         </View>
                       ))}
                     </View>
@@ -2068,184 +2053,120 @@ const styles = StyleSheet.create({
   logoutBtn: { paddingHorizontal: 12, paddingVertical: 8 },
   logoutBtnText: { color: "#ef4444", fontWeight: "700", fontSize: 13 },
 
-  mainLayout: { flex: 1, flexDirection: "row", backgroundColor: "#f8f9fa" },
+  mainLayout: { flex: 1, flexDirection: "row", backgroundColor: "#f3f7fd" },
   sidebar: {
+    width: 96,
     backgroundColor: "#ffffff",
     borderRightWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#eef2f6",
   },
-  sidebarWide: { width: 310 },
-  sidebarNormal: { width: 310 },
-  sidebarContent: { padding: 16, gap: 12 },
+  sidebarContent: { paddingVertical: 12, paddingHorizontal: 8, gap: 10, alignItems: "center" },
 
-  /* Card styling from CSS (.sidebar-cat-item) */
+  /* Sidebar item with car icon & label matching reference */
   catCard: {
-    flexDirection: "row",
+    width: "100%",
     alignItems: "center",
-    backgroundColor: "#fffdfa",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#fdf5ef",
-    minHeight: 100,
-    paddingVertical: 16,
-    paddingHorizontal: 12,
-    gap: 10,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 8,
-    elevation: 2,
-    position: "relative",
-    overflow: "hidden",
+    justifyContent: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderRadius: 14,
+    backgroundColor: "transparent",
+    gap: 6,
   },
   catCardActive: {
-    borderColor: "#fcd3a4",
-    backgroundColor: "#ffffff",
-    shadowColor: "#f97316",
-    shadowOpacity: 0.08,
+    backgroundColor: "#ffe4e6",
   },
-  catCardBar: {
-    width: 4,
-    height: 48,
-    borderRadius: 4,
-    backgroundColor: "#f97316",
+  catIconText: {
+    fontSize: 24,
+    opacity: 0.85,
   },
-  catCardBarActive: {
-    backgroundColor: "#f97316",
-  },
-  catIconWrap: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "transparent",
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-  },
-  catIconBubbles: {
-    position: "absolute",
-    top: 2,
-    fontSize: 9,
-    color: "#ff6b1a",
-    fontWeight: "900",
-  },
-  catIconEmoji: {
-    fontSize: 26,
-    marginTop: 4,
-  },
-  catInfoWrap: {
-    flex: 1,
-    justifyContent: "center",
+  catIconTextActive: {
+    opacity: 1,
   },
   catCardTitle: {
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: "700",
-    color: "#1f2937",
-    marginBottom: 4,
-    lineHeight: 20,
+    color: "#1e293b",
+    textAlign: "center",
   },
   catCardTitleActive: {
-    color: "#1f2937",
+    color: "#e11d48",
     fontWeight: "800",
-  },
-  catDotRow: {
-    flexDirection: "row",
-    gap: 4,
-    alignItems: "center",
-  },
-  catDot: {
-    width: 4,
-    height: 2,
-    borderRadius: 2,
-    backgroundColor: "#d1d5db",
-  },
-  catArrowWrap: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: "#fff4ea",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  catArrowText: {
-    fontSize: 14,
-    color: "#6b7280",
-    fontWeight: "800",
-    marginTop: -2,
   },
 
-  /* Hero Banner matching CSS (.hero-banner) */
+  /* Hero Banner matching image */
   heroBannerContainer: {
-    padding: 24,
+    padding: 0,
   },
   heroBanner: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#fcd3a4",
-    borderRadius: 16,
-    paddingVertical: 22,
-    paddingHorizontal: 32,
-    marginBottom: 16,
-    gap: 24,
+    backgroundColor: "#ffcca2",
+    borderRadius: 24,
+    paddingVertical: 20,
+    paddingHorizontal: 22,
+    marginBottom: 18,
+    gap: 16,
     position: "relative",
     overflow: "hidden",
     flexShrink: 0,
   },
   heroIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: "#ffffff",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  heroCarEmoji: {
-    fontSize: 38,
-  },
-  heroTextWrap: {
-    flex: 1,
-  },
-  heroCategoryTitle: {
-    fontSize: 36,
-    fontWeight: "900",
-    color: "#0f172a",
-    letterSpacing: -0.5,
-    marginBottom: 4,
-  },
-  heroSubtitle: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#1e293b",
-  },
-  heroLogoutBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.06,
     shadowRadius: 6,
     elevation: 2,
   },
-  heroLogoutIcon: {
-    fontSize: 22,
-    color: "#374151",
+  heroCarEmoji: {
+    fontSize: 32,
+  },
+  heroTextWrap: {
+    flex: 1,
+  },
+  heroCategoryTitle: {
+    fontSize: 28,
     fontWeight: "900",
+    color: "#0f172a",
+    letterSpacing: -0.5,
+    marginBottom: 2,
+  },
+  heroSubtitle: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#334155",
+  },
+  heroMoreBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  heroMoreDots: {
+    fontSize: 18,
+    color: "#2563eb",
+    fontWeight: "900",
+    letterSpacing: -1,
   },
 
-  contentArea: { flex: 1, padding: 16, backgroundColor: "#f8f9fa" },
+  contentArea: { flex: 1, padding: 18, backgroundColor: "#f3f7fd" },
   groupTabsContainer: {
     flexShrink: 0,
     marginBottom: 16,
-    height: 48,
+    height: 44,
     justifyContent: "center",
   },
   groupTabsScroll: {
@@ -2253,35 +2174,30 @@ const styles = StyleSheet.create({
   },
   groupsRow: {
     flexDirection: "row",
-    gap: 12,
-    paddingHorizontal: 4,
+    gap: 10,
     alignItems: "center",
   },
   groupPill: {
-    height: 40,
-    paddingHorizontal: 22,
-    borderRadius: 20,
-    borderWidth: 2,
-    borderColor: "#f97316",
-    backgroundColor: "transparent",
+    height: 38,
+    paddingHorizontal: 20,
+    borderRadius: 19,
+    borderWidth: 1.5,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
-    flexDirection: "row",
   },
   groupPillActive: {
-    backgroundColor: "#ffffff",
+    backgroundColor: "#ffedd5",
     borderColor: "#f97316",
   },
   groupPillText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "700",
-    color: "#f97316",
-    textAlign: "center",
-    lineHeight: 20,
-    includeFontPadding: false,
+    color: "#64748b",
   },
   groupPillTextActive: {
-    color: "#f97316",
+    color: "#ea580c",
     fontWeight: "800",
   },
 
@@ -2289,25 +2205,22 @@ const styles = StyleSheet.create({
     flex: 1,
     width: "100%",
   },
-  dishesList: { paddingTop: 2, paddingBottom: 120, paddingHorizontal: 4 },
+  dishesList: { paddingTop: 2, paddingBottom: 110, paddingHorizontal: 2 },
   dishCard: {
     flex: 1,
     margin: 8,
     backgroundColor: "#ffffff",
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: "#f3f4f6",
-    paddingVertical: 20,
-    paddingHorizontal: 16,
+    borderRadius: 28,
+    paddingVertical: 22,
+    paddingHorizontal: 18,
     alignItems: "center",
-    justifyContent: "space-between",
-    minHeight: 390,
+    justifyContent: "flex-start",
     position: "relative",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.04,
-    shadowRadius: 25,
-    elevation: 3,
+    shadowColor: "#64748b",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 4,
   },
   dishCardInvisible: {
     backgroundColor: "transparent",
@@ -2320,35 +2233,37 @@ const styles = StyleSheet.create({
   dishCardHeartWrap: {
     position: "absolute",
     top: 16,
-    right: 16,
+    right: 18,
     zIndex: 2,
   },
   dishCardHeartIcon: {
     fontSize: 22,
-    color: "#f97316",
-    fontWeight: "700",
+    color: "#ef4444",
+    fontWeight: "600",
   },
   dishCircularBox: {
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    backgroundColor: "#fff5eb",
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    borderWidth: 3,
+    borderColor: "#eff6ff",
+    backgroundColor: "#f8fafc",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 12,
-    marginTop: 4,
+    marginBottom: 16,
+    marginTop: 6,
     overflow: "hidden",
   },
-  dishImg: { width: "100%", height: "100%", borderRadius: 55 },
-  dishEmoji: { fontSize: 44 },
+  dishImg: { width: "100%", height: "100%", borderRadius: 70 },
+  dishEmoji: { fontSize: 50 },
   soldOutBadge: {
     position: "absolute",
-    top: 6,
-    right: 6,
-    backgroundColor: "#ff3b30",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    top: 8,
+    right: 8,
+    backgroundColor: "#ef4444",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
     zIndex: 9999,
   },
   soldOutText: { color: "#ffffff", fontSize: 10, fontWeight: "800" },
@@ -2359,43 +2274,51 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   dishName: {
-    fontSize: 21,
-    fontWeight: "800",
-    color: "#111827",
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#0f172a",
     textAlign: "center",
-    marginBottom: 6,
+    marginBottom: 14,
+    letterSpacing: -0.3,
   },
   dishBulletsContainer: {
     width: "100%",
-    paddingHorizontal: 4,
-    marginVertical: 6,
-    gap: 6,
+    paddingHorizontal: 8,
+    marginBottom: 18,
+    gap: 8,
     alignItems: "flex-start",
   },
   dishBulletRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
+    alignItems: "center",
+    gap: 10,
   },
-  dishBulletDot: {
-    fontSize: 16,
-    color: "#f97316",
-    lineHeight: 22,
+  checkBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#f97316",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkBadgeIcon: {
+    color: "#ffffff",
+    fontSize: 12,
     fontWeight: "900",
   },
   dishBulletText: {
     fontSize: 15,
     fontWeight: "600",
-    color: "#374151",
-    lineHeight: 22,
+    color: "#475569",
     flex: 1,
   },
   dishPrice: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: "900",
     color: "#f97316",
-    marginTop: 10,
     textAlign: "center",
+    letterSpacing: -0.5,
+    marginTop: 4,
   },
   emptyDishes: { padding: 40, alignItems: "center" },
   emptyDishesText: { color: "#9ca3af", fontSize: 15 },
