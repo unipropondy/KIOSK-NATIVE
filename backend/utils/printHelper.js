@@ -491,6 +491,8 @@ async function generateAndQueueKOTs(orderId) {
     }
 
     // 5. Generate KDS backup print (PrinterType = 4) containing all items
+    // NOTE: If the KDS printer shares the same IP as a Kitchen printer that already printed,
+    // skip it to prevent printing identical duplicate KOT slips on the same physical device.
     try {
       const kdsPrinterRes = await pool.request()
         .query(`
@@ -509,13 +511,21 @@ async function generateAndQueueKOTs(orderId) {
         const kdsPrinter = kdsPrinterRes.recordset[0];
         const kdsIp = kdsPrinter.PrinterIP;
 
-        const orderData = {
-          orderId: orderHeader.OrderId,
-          orderNo: orderHeader.OrderNumber,
-          tableNo: orderHeader.tableNo,
-          waiterName: "QR POS",
-          kitchenName: "KDS"
-        };
+        // Check if any kitchen group already printed to this exact physical printer IP
+        const alreadyPrintedToIp = Object.values(printerGroups).some(
+          (g) => g.printerIp && g.printerIp === kdsIp
+        );
+
+        if (alreadyPrintedToIp) {
+          console.log(`[generateAndQueueKOTs] SKIPPING KDS backup print: Printer IP '${kdsIp}' was already printed by a Kitchen group (avoids duplicate KOT).`);
+        } else {
+          const orderData = {
+            orderId: orderHeader.OrderId,
+            orderNo: orderHeader.OrderNumber,
+            tableNo: orderHeader.tableNo,
+            waiterName: "QR POS",
+            kitchenName: "KDS"
+          };
 
         const kdsOrderNoLast4 = String(orderHeader.OrderNumber).replace(/\D/g, '').slice(-4) || orderHeader.OrderNumber;
         const kdsDupCheck = await pool.request()
@@ -552,9 +562,10 @@ async function generateAndQueueKOTs(orderId) {
           console.log(`[generateAndQueueKOTs] Queued KDS job ${kdsJobId} for IP ${kdsIp}`);
         }
       }
-    } catch (kdsErr) {
-      console.error("[generateAndQueueKOTs] KDS backup print queue error:", kdsErr.message);
     }
+  } catch (kdsErr) {
+    console.error("[generateAndQueueKOTs] KDS backup print queue error:", kdsErr.message);
+  }
 
   } catch (err) {
     console.error("[generateAndQueueKOTs] Fatal Error:", err.message);
