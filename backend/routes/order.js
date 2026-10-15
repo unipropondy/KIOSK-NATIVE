@@ -1593,7 +1593,7 @@ router.post("/mark-sent", async (req, res) => {
         orderId: orderId,
         source: "QR",
         paymentType: "cashier",
-        printKOT: true,
+        printKOT: false, // KOT already generated and queued directly by generateAndQueueKOTs
         printBill: true
       });
     }
