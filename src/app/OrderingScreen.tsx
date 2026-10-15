@@ -43,6 +43,13 @@ const parseDescriptionBullets = (desc?: string): string[] => {
       .filter(Boolean);
   }
 
+  if (trimmed.includes("|")) {
+    return trimmed
+      .split("|")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
   if (trimmed.includes("\n")) {
     return trimmed
       .split("\n")
@@ -991,6 +998,8 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
       }
 
       const completedId = data.orderId || orderId || "1001";
+      setIsCartLoading(false);
+      setShowCartPage(false);
       setKioskThankYouOrderId(completedId);
 
       // Clear session
@@ -1006,12 +1015,12 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
       setTimeout(() => {
         setKioskThankYouOrderId(null);
         setCart([]);
-        setShowCartPage(false);
         if (onOrderCompleted) {
           onOrderCompleted(completedId);
         }
       }, 2500);
     } catch (err: any) {
+      setIsCartLoading(false);
       Alert.alert("Settlement Error", err?.message || "Payment Failed");
     } finally {
       setIsCartLoading(false);
@@ -1069,20 +1078,44 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                       loadGroups(cat.CategoryId);
                     }
                   }}
-                  activeOpacity={0.8}
+                  activeOpacity={0.85}
                 >
-                  <Text style={[styles.catIconText, isActive && styles.catIconTextActive]}>
-                    🚘
-                  </Text>
-                  <Text
+                  {/* Left orange accent bar */}
+                  <View
                     style={[
-                      styles.catCardTitle,
-                      isActive && styles.catCardTitleActive,
+                      styles.catCardBar,
+                      isActive && styles.catCardBarActive,
                     ]}
-                    numberOfLines={1}
-                  >
-                    {cat.KitchenTypeName}
-                  </Text>
+                  />
+
+                  {/* Car Icon with bubbles */}
+                  <View style={styles.catIconWrap}>
+                    <Text style={styles.catIconBubbles}>° °</Text>
+                    <Text style={styles.catIconEmoji}>🚗</Text>
+                  </View>
+
+                  {/* Info: Title & 3 dashed dots */}
+                  <View style={styles.catInfoWrap}>
+                    <Text
+                      style={[
+                        styles.catCardTitle,
+                        isActive && styles.catCardTitleActive,
+                      ]}
+                      numberOfLines={2}
+                    >
+                      {cat.KitchenTypeName}
+                    </Text>
+                    <View style={styles.catDotRow}>
+                      <View style={[styles.catDot, { backgroundColor: "#f97316" }]} />
+                      <View style={styles.catDot} />
+                      <View style={styles.catDot} />
+                    </View>
+                  </View>
+
+                  {/* Right chevron arrow circle */}
+                  <View style={styles.catArrowWrap}>
+                    <Text style={styles.catArrowText}>›</Text>
+                  </View>
                 </TouchableOpacity>
               );
             })}
@@ -1198,24 +1231,26 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                   </View>
 
                   <View style={styles.dishInfo}>
-                    <Text style={styles.dishName} numberOfLines={2}>
-                      {item.Name}
-                    </Text>
+                    <View style={styles.dishTopContent}>
+                      <Text style={styles.dishName} numberOfLines={2}>
+                        {item.Name}
+                      </Text>
 
-                    {/* Bullet Points Description with Orange Check Mark badge */}
-                    <View style={styles.dishBulletsContainer}>
-                      {parseDescriptionBullets(
-                        item.Description || "Wash + Vacuum + Tyre Shine"
-                      ).map((bullet, idx) => (
-                        <View key={idx} style={styles.dishBulletRow}>
-                          <View style={styles.checkBadge}>
-                            <Text style={styles.checkBadgeIcon}>✓</Text>
+                      {/* Bullet Points Description with Orange Check Mark badge */}
+                      <View style={styles.dishBulletsContainer}>
+                        {parseDescriptionBullets(
+                          item.Description || "Wash + Vacuum + Tyre Shine"
+                        ).map((bullet, idx) => (
+                          <View key={idx} style={styles.dishBulletRow}>
+                            <View style={styles.checkBadge}>
+                              <Text style={styles.checkBadgeIcon}>✓</Text>
+                            </View>
+                            <Text style={styles.dishBulletText}>
+                              {bullet}
+                            </Text>
                           </View>
-                          <Text style={styles.dishBulletText} numberOfLines={1}>
-                            {bullet}
-                          </Text>
-                        </View>
-                      ))}
+                        ))}
+                      </View>
                     </View>
 
                     <Text style={styles.dishPrice}>${Number(item.Price || 0).toFixed(2)}</Text>
@@ -2003,12 +2038,16 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
       </Modal>
 
       {/* Loading Modal */}
-      {isCartLoading && (
+      <Modal
+        visible={isCartLoading}
+        transparent={true}
+        animationType="fade"
+      >
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#ffffff" />
           <Text style={styles.loadingOverlayText}>Processing Order...</Text>
         </View>
-      )}
+      </Modal>
     </View>
   );
 }
@@ -2055,43 +2094,106 @@ const styles = StyleSheet.create({
 
   mainLayout: { flex: 1, flexDirection: "row", backgroundColor: "#f3f7fd" },
   sidebar: {
-    width: 96,
+    width: 280,
     backgroundColor: "#ffffff",
     borderRightWidth: 1,
     borderColor: "#eef2f6",
   },
-  sidebarContent: { paddingVertical: 12, paddingHorizontal: 8, gap: 10, alignItems: "center" },
+  sidebarContent: { paddingVertical: 18, paddingHorizontal: 14, gap: 14 },
 
-  /* Sidebar item with car icon & label matching reference */
+  /* Card styling matching the reference image */
   catCard: {
-    width: "100%",
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    borderRadius: 14,
-    backgroundColor: "transparent",
-    gap: 6,
+    backgroundColor: "#fffdfa",
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: "#fdf2e9",
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    gap: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.02,
+    shadowRadius: 8,
+    elevation: 2,
+    position: "relative",
+    overflow: "hidden",
   },
   catCardActive: {
-    backgroundColor: "#ffe4e6",
+    borderColor: "#ffcca2",
+    backgroundColor: "#ffffff",
+    shadowColor: "#f97316",
+    shadowOpacity: 0.08,
   },
-  catIconText: {
-    fontSize: 24,
-    opacity: 0.85,
+  catCardBar: {
+    width: 4,
+    height: 48,
+    borderRadius: 4,
+    backgroundColor: "transparent",
   },
-  catIconTextActive: {
-    opacity: 1,
+  catCardBarActive: {
+    backgroundColor: "#f97316",
+  },
+  catIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  catIconBubbles: {
+    position: "absolute",
+    top: 0,
+    fontSize: 10,
+    color: "#f97316",
+    fontWeight: "900",
+  },
+  catIconEmoji: {
+    fontSize: 26,
+    marginTop: 4,
+  },
+  catInfoWrap: {
+    flex: 1,
+    justifyContent: "center",
   },
   catCardTitle: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#1e293b",
-    textAlign: "center",
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#0f172a",
+    marginBottom: 6,
+    lineHeight: 20,
   },
   catCardTitleActive: {
-    color: "#e11d48",
+    color: "#0f172a",
+    fontWeight: "900",
+  },
+  catDotRow: {
+    flexDirection: "row",
+    gap: 4,
+    alignItems: "center",
+  },
+  catDot: {
+    width: 6,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "#cbd5e1",
+  },
+  catArrowWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#fff7ed",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  catArrowText: {
+    fontSize: 15,
+    color: "#94a3b8",
     fontWeight: "800",
+    marginTop: -2,
   },
 
   /* Hero Banner matching image */
@@ -2273,6 +2375,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "space-between",
   },
+  dishTopContent: {
+    width: "100%",
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "flex-start",
+  },
   dishName: {
     fontSize: 24,
     fontWeight: "900",
@@ -2283,15 +2391,16 @@ const styles = StyleSheet.create({
   },
   dishBulletsContainer: {
     width: "100%",
-    paddingHorizontal: 12,
-    marginBottom: 22,
+    paddingHorizontal: 8,
+    marginBottom: 16,
     gap: 10,
-    alignItems: "flex-start",
+    alignItems: "stretch",
   },
   dishBulletRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 12,
+    width: "100%",
   },
   checkBadge: {
     width: 22,
@@ -2300,6 +2409,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#f97316",
     alignItems: "center",
     justifyContent: "center",
+    marginTop: 1,
+    flexShrink: 0,
   },
   checkBadgeIcon: {
     color: "#ffffff",
@@ -2307,10 +2418,12 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   dishBulletText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "600",
     color: "#475569",
     flex: 1,
+    lineHeight: 22,
+    flexWrap: "wrap",
   },
   dishPrice: {
     fontSize: 32,
