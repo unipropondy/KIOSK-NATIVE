@@ -454,17 +454,20 @@ async function generateAndQueueKOTs(orderId) {
           .input('PrinterName', sql.NVarChar(100), group.printerName)
           .input('SearchText', sql.NVarChar(100), `%Order #: ${orderNoLast4}%`)
           .query(`
-            SELECT JobId, Status 
+            SELECT TOP 1 JobId, Status, CreatedOn 
             FROM PrintJobQueue 
             WHERE PrinterName = @PrinterName
               AND Content LIKE @SearchText
+              AND DATEDIFF(minute, CreatedOn, GETDATE()) < 5
+            ORDER BY CreatedOn DESC
           `);
 
-        let kotType = "NEW_ORDER";
         if (dupCheck.recordset.length > 0) {
-          kotType = "ADDITIONAL";
+          console.log(`[generateAndQueueKOTs] DUPLICATE SUPPRESSED: KOT for Order '${orderHeader.OrderNumber}' already queued on '${group.printerName}' within 5 min.`);
+          continue;
         }
 
+        let kotType = "NEW_ORDER";
         const thermalText = formatKOTThermalText(orderData, group.items, kotType);
         const storeId = "STORE_001";
         const jobId = crypto.randomUUID();
@@ -519,33 +522,35 @@ async function generateAndQueueKOTs(orderId) {
           .input('PrinterName', sql.NVarChar(100), kdsPrinter.PrinterName)
           .input('SearchText', sql.NVarChar(100), `%Order #: ${kdsOrderNoLast4}%`)
           .query(`
-            SELECT TOP 1 JobId 
+            SELECT TOP 1 JobId, CreatedOn 
             FROM PrintJobQueue 
             WHERE PrinterName = @PrinterName 
               AND Content LIKE @SearchText
+              AND DATEDIFF(minute, CreatedOn, GETDATE()) < 5
+            ORDER BY CreatedOn DESC
           `);
 
-        let kdsKotType = "KDS_PRINT";
         if (kdsDupCheck.recordset.length > 0) {
-          kdsKotType = "ADDITIONAL_KDS_PRINT";
+          console.log(`[generateAndQueueKOTs] DUPLICATE SUPPRESSED: KDS job for Order '${orderHeader.OrderNumber}' already queued within 5 min.`);
+        } else {
+          let kdsKotType = "KDS_PRINT";
+          const kdsThermalText = formatKOTThermalText(orderData, items, kdsKotType);
+          const storeId = "STORE_001";
+          const kdsJobId = crypto.randomUUID();
+
+          await pool.request()
+            .input('JobId', sql.UniqueIdentifier, kdsJobId)
+            .input('StoreId', sql.NVarChar(50), storeId)
+            .input('PrinterName', sql.NVarChar(100), kdsPrinter.PrinterName)
+            .input('PrinterIp', sql.NVarChar(100), kdsIp)
+            .input('PrinterPort', sql.Int, 9100)
+            .input('Content', sql.NVarChar(sql.MAX), kdsThermalText)
+            .query(`
+              INSERT INTO PrintJobQueue (JobId, StoreId, PrinterName, PrinterIp, PrinterPort, Content, Status, CreatedOn, Attempts)
+              VALUES (@JobId, @StoreId, @PrinterName, @PrinterIp, @PrinterPort, @Content, 'PENDING', GETDATE(), 0)
+            `);
+          console.log(`[generateAndQueueKOTs] Queued KDS job ${kdsJobId} for IP ${kdsIp}`);
         }
-
-        const kdsThermalText = formatKOTThermalText(orderData, items, kdsKotType);
-        const storeId = "STORE_001";
-        const kdsJobId = crypto.randomUUID();
-
-        await pool.request()
-          .input('JobId', sql.UniqueIdentifier, kdsJobId)
-          .input('StoreId', sql.NVarChar(50), storeId)
-          .input('PrinterName', sql.NVarChar(100), kdsPrinter.PrinterName)
-          .input('PrinterIp', sql.NVarChar(100), kdsIp)
-          .input('PrinterPort', sql.Int, 9100)
-          .input('Content', sql.NVarChar(sql.MAX), kdsThermalText)
-          .query(`
-            INSERT INTO PrintJobQueue (JobId, StoreId, PrinterName, PrinterIp, PrinterPort, Content, Status, CreatedOn, Attempts)
-            VALUES (@JobId, @StoreId, @PrinterName, @PrinterIp, @PrinterPort, @Content, 'PENDING', GETDATE(), 0)
-          `);
-        console.log(`[generateAndQueueKOTs] Queued KDS job ${kdsJobId} for IP ${kdsIp}`);
       }
     } catch (kdsErr) {
       console.error("[generateAndQueueKOTs] KDS backup print queue error:", kdsErr.message);

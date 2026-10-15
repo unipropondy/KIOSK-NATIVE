@@ -2071,7 +2071,7 @@ router.post("/complete-online-payment", async (req, res) => {
         orderId: orderId,
         source: "QR",
         paymentType: "online",
-        printKOT: true,
+        printKOT: false, // KOT already generated and queued directly by generateAndQueueKOTs
         printBill: true
       });
       io.emit("kot_printed", { tableId: cleanTableId, orderId: orderId });

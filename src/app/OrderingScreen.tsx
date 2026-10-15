@@ -1,5 +1,6 @@
 import { API } from "@/config";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -1122,7 +1123,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
               onPress={onLogout}
               activeOpacity={0.8}
             >
-              <Text style={styles.heroMoreDots}>•••</Text>
+              <Ionicons name="log-out-outline" size={20} color="#ea580c" style={{ marginLeft: 2 }} />
             </TouchableOpacity>
           </View>
 
@@ -1183,16 +1184,26 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                 );
               }
 
+              const dishQty = cart
+                .filter((c: any) => (c.DishId || c.id) === (item.DishId || item.id))
+                .reduce((sum: number, c: any) => sum + (c.qty || 1), 0);
+
               return (
                 <TouchableOpacity
                   style={[styles.dishCard, item.IsSoldOut && styles.dishSoldOut]}
                   onPress={() => handleDishClick(item)}
                   activeOpacity={0.88}
                 >
-                  {/* Red Heart outline icon on top right */}
-                  <View style={styles.dishCardHeartWrap}>
-                    <Text style={styles.dishCardHeartIcon}>♡</Text>
-                  </View>
+                  {/* Top Right Badge: Shows quantity (e.g. 1) if added to cart, otherwise heart outline */}
+                  {dishQty > 0 ? (
+                    <View style={styles.dishCardQtyBadge}>
+                      <Text style={styles.dishCardQtyBadgeText}>{dishQty}</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.dishCardHeartWrap}>
+                      <Text style={styles.dishCardHeartIcon}>♡</Text>
+                    </View>
+                  )}
 
                   {/* Circular dish image matching reference design */}
                   <View style={styles.dishCircularBox}>
@@ -1327,6 +1338,14 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                   <Text style={styles.cartItemPrice}>
                     ${(Number(item.Price || item.finalPrice || 0) * Number(item.qty || 1)).toFixed(2)}
                   </Text>
+                  <TouchableOpacity
+                    style={styles.cartItemDeleteBtn}
+                    onPress={() => decreaseQty(index)}
+                    hitSlop={8}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="trash-outline" size={19} color="#ef4444" />
+                  </TouchableOpacity>
                 </View>
               </View>
             ))}
@@ -1658,9 +1677,16 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                 ).toFixed(2)}
               </Text>
               {!!selectedDish?.Description && (
-                <Text style={styles.comboDishDesc}>
-                  {selectedDish.Description}
-                </Text>
+                <View style={styles.comboDishBulletsWrap}>
+                  {parseDescriptionBullets(selectedDish.Description).map((bullet, idx) => (
+                    <View key={idx} style={styles.comboDishBulletRow}>
+                      <View style={styles.comboCheckBadge}>
+                        <Text style={styles.comboCheckBadgeIcon}>✓</Text>
+                      </View>
+                      <Text style={styles.comboDishBulletText}>{bullet}</Text>
+                    </View>
+                  ))}
+                </View>
               )}
             </View>
 
@@ -1902,9 +1928,16 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                 ).toFixed(2)}
               </Text>
               {!!selectedDish?.Description && (
-                <Text style={styles.comboDishDesc}>
-                  {selectedDish.Description}
-                </Text>
+                <View style={styles.comboDishBulletsWrap}>
+                  {parseDescriptionBullets(selectedDish.Description).map((bullet, idx) => (
+                    <View key={idx} style={styles.comboDishBulletRow}>
+                      <View style={styles.comboCheckBadge}>
+                        <Text style={styles.comboCheckBadgeIcon}>✓</Text>
+                      </View>
+                      <Text style={styles.comboDishBulletText}>{bullet}</Text>
+                    </View>
+                  ))}
+                </View>
               )}
             </View>
 
@@ -2325,6 +2358,32 @@ const styles = StyleSheet.create({
     color: "#ef4444",
     fontWeight: "600",
   },
+  dishCardQtyBadge: {
+    position: "absolute",
+    top: 16,
+    right: 18,
+    zIndex: 5,
+    minWidth: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#ff641f",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 7,
+    shadowColor: "#ff641f",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 4,
+    borderWidth: 2,
+    borderColor: "#ffffff",
+  },
+  dishCardQtyBadgeText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "900",
+    textAlign: "center",
+  },
   dishCircularBox: {
     width: 180,
     height: 180,
@@ -2490,7 +2549,10 @@ const styles = StyleSheet.create({
   },
   cartItemRight: {
     flex: 1,
-    alignItems: "flex-end",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 14,
   },
   cartItemName: {
     fontSize: 17,
@@ -2538,6 +2600,15 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#dc2626",
     textAlign: "right",
+  },
+  cartItemDeleteBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#fee2e2",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 2,
   },
 
   /* Fixed Bottom Container for Summary & Action Card */
@@ -2639,8 +2710,24 @@ const styles = StyleSheet.create({
     paddingVertical: 32,
     paddingHorizontal: 16,
   },
-  paymentCloseBtn: { position: "absolute", top: 24, right: 24, zIndex: 10 },
-  paymentCloseText: { color: "#ffffff", fontSize: 32, fontWeight: "700", opacity: 0.9 },
+  paymentCloseBtn: {
+    position: "absolute",
+    top: 24,
+    right: 24,
+    zIndex: 10,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  paymentCloseText: { color: "#ffffff", fontSize: 22, fontWeight: "800", lineHeight: 24, textAlign: "center" },
   paymentTotal: { fontSize: 40, fontWeight: "900", color: "#ffffff", marginBottom: 10, letterSpacing: -0.5, textAlign: "center" },
   paymentPrompt: { fontSize: 24, fontWeight: "700", color: "#ffffff", opacity: 0.95, marginBottom: 40, textAlign: "center" },
   paymentOptionsRow: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 24, maxWidth: 840, width: "100%" },
@@ -2952,6 +3039,36 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#6b7280",
     lineHeight: 20,
+  },
+  comboDishBulletsWrap: {
+    marginTop: 8,
+    gap: 8,
+  },
+  comboDishBulletRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  comboCheckBadge: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#f97316",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  comboCheckBadgeIcon: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  comboDishBulletText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#475569",
+    flex: 1,
+    lineHeight: 19,
   },
   comboLoadingBox: {
     padding: 48,
