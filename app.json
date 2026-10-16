@@ -8,7 +8,7 @@
     "scheme": "qrposnative",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "supportsTablet": true
     },
     "android": {
       "package": "com.islandcarwash.kiosk",
