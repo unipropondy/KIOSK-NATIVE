@@ -273,6 +273,22 @@ router.post('/', authenticateBridge, async (req, res) => {
         VALUES (@JobId, @StoreId, @PrinterName, @PrinterIp, @PrinterPort, @Content, 'PENDING', GETDATE())
       `);
 
+    // Direct USB printing if not an IP address on Windows host
+    const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(printerIp).trim());
+    if (!isIp && process.platform === "win32") {
+      const { sendToWindowsSpooler } = require('../utils/printHelper');
+      sendToWindowsSpooler(printerIp, content)
+        .then(() => {
+          pool.request()
+            .input('JobId', sql.UniqueIdentifier, jobId)
+            .query("UPDATE PrintJobQueue SET Status = 'COMPLETED', CompletedOn = GETDATE() WHERE JobId = @JobId")
+            .catch(() => {});
+        })
+        .catch((e) => {
+          console.warn('[print-jobs] Direct USB spooler print failed:', e.message);
+        });
+    }
+
     res.json({ success: true, message: 'Print job queued successfully', jobId, printerIp, printerName });
   } catch (err) {
     console.error('Error queuing print job:', err);

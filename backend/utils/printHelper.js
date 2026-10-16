@@ -1,5 +1,112 @@
 const { sql, poolPromise } = require("../config/db");
 const crypto = require("crypto");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { exec } = require("child_process");
+
+/**
+ * Sends raw ESC/POS binary directly to Windows Print Spooler (USB / local / shared printers).
+ */
+function sendToWindowsSpooler(printerName, content) {
+  return new Promise((resolve, reject) => {
+    let cleanName = printerName.trim();
+    if (cleanName.toLowerCase().startsWith('\\\\localhost\\')) {
+      cleanName = cleanName.substring(13);
+    } else if (cleanName.startsWith('\\\\')) {
+      const parts = cleanName.split('\\').filter(Boolean);
+      if (parts.length === 1) cleanName = parts[0];
+    }
+
+    const tmpFile = path.join(os.tmpdir(), `kiosk_usb_print_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.bin`);
+
+    // Parse simple thermal ESC/POS tags to binary
+    const chunks = [];
+    const tagRegex = /(\[C\]|\[L\]|\[R\]|<\/?B>|<font size='big'>|<font size='normal'>|<\/font>)/gi;
+    const parts = content.split(tagRegex);
+    for (const part of parts) {
+      if (!part) continue;
+      const lower = part.toLowerCase();
+      if (lower === '[c]') chunks.push(Buffer.from([0x1B, 0x61, 0x01]));
+      else if (lower === '[l]') chunks.push(Buffer.from([0x1B, 0x61, 0x00]));
+      else if (lower === '[r]') chunks.push(Buffer.from([0x1B, 0x61, 0x02]));
+      else if (lower === '<b>') chunks.push(Buffer.from([0x1B, 0x45, 0x01]));
+      else if (lower === '</b>') chunks.push(Buffer.from([0x1B, 0x45, 0x00]));
+      else if (lower === "<font size='big'>" || lower === '<font size="big">') chunks.push(Buffer.from([0x1D, 0x21, 0x11]));
+      else if (lower === "<font size='normal'>" || lower === '<font size="normal">' || lower === '</font>') chunks.push(Buffer.from([0x1D, 0x21, 0x00]));
+      else chunks.push(Buffer.from(part, 'utf-8'));
+    }
+    // Append feed + cut
+    chunks.push(Buffer.from([0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00]));
+    const payload = Buffer.concat(chunks);
+
+    try {
+      fs.writeFileSync(tmpFile, payload);
+    } catch (e) {
+      return reject(e);
+    }
+
+    const safePrinterName = cleanName.replace(/'/g, "''");
+    const safeFilePath = tmpFile.replace(/'/g, "''");
+
+    const psScript = `
+$p = '${safePrinterName}';
+$f = '${safeFilePath}';
+if (-not (Test-Path $f)) { exit 1 }
+$b = [System.IO.File]::ReadAllBytes($f);
+$c = @'
+using System;
+using System.Runtime.InteropServices;
+public class RawPrinter {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public class DOCINFO1 { public string pDocName; public string pOutputFile; public string pDataType; }
+    [DllImport("winspool.drv", CharSet=CharSet.Unicode, ExactSpelling=false, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool ClosePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", CharSet=CharSet.Unicode, ExactSpelling=false, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool StartDocPrinter(IntPtr hPrinter, int Level, DOCINFO1 pDocInfo);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool EndDocPrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool StartPagePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool EndPagePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool WritePrinter(IntPtr hPrinter, byte[] pBytes, int dwCount, out int dwWritten);
+
+    public static bool SendBytes(string printerName, byte[] bytes) {
+        IntPtr hPrinter;
+        if (!OpenPrinter(printerName, out hPrinter, IntPtr.Zero)) return false;
+        DOCINFO1 di = new DOCINFO1(); di.pDocName = "Kiosk Receipt"; di.pDataType = "RAW";
+        if (!StartDocPrinter(hPrinter, 1, di)) { ClosePrinter(hPrinter); return false; }
+        if (!StartPagePrinter(hPrinter)) { EndDocPrinter(hPrinter); ClosePrinter(hPrinter); return false; }
+        int written = 0; bool ok = WritePrinter(hPrinter, bytes, bytes.Length, out written);
+        EndPagePrinter(hPrinter); EndDocPrinter(hPrinter); ClosePrinter(hPrinter);
+        return ok && (written == bytes.Length);
+    }
+}
+'@;
+if (-not ([System.Management.Automation.PSTypeName]'RawPrinter').Type) { Add-Type -TypeDefinition $c }
+if ([RawPrinter]::SendBytes($p, $b)) { Write-Host "SUCCESS" } else { Write-Host "FAILED"; exit 1 }
+`;
+
+    const encodedScript = Buffer.from(psScript, 'utf16le').toString('base64');
+    const command = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedScript}`;
+
+    exec(command, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      if (err || stdout.trim() !== 'SUCCESS') {
+        const errorMsg = stderr.trim() || stdout.trim() || (err ? err.message : 'Spooler failed');
+        console.error(`[sendToWindowsSpooler] USB Printer '${cleanName}' print error:`, errorMsg);
+        reject(new Error(errorMsg));
+      } else {
+        console.log(`[sendToWindowsSpooler] USB Printer '${cleanName}' print SUCCESS.`);
+        resolve();
+      }
+    });
+  });
+}
 
 function formatToSingaporeTime(date, options = {}) {
   return new Intl.DateTimeFormat("en-GB", {
@@ -756,6 +863,21 @@ async function generateAndQueueReceipt(orderId, paymentMode = 'ONLINE', passedEx
 
     console.log(`[generateAndQueueReceipt] Queued Receipt job ${jobId} for Printer '${printerName}' (${printerIp})`);
 
+    // If running on Windows host and the printer is a local USB spooler printer (e.g. 'TD80 Printer')
+    const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(printerIp).trim());
+    if (!isIp && process.platform === "win32") {
+      sendToWindowsSpooler(printerIp, thermalText)
+        .then(() => {
+          pool.request()
+            .input('JobId', sql.UniqueIdentifier, jobId)
+            .query("UPDATE PrintJobQueue SET Status = 'COMPLETED', CompletedOn = GETDATE() WHERE JobId = @JobId")
+            .catch(() => {});
+        })
+        .catch(async (e) => {
+          console.warn("[generateAndQueueReceipt] Direct spooler print failed:", e.message);
+        });
+    }
+
   } catch (err) {
     console.error("[generateAndQueueReceipt] Error:", err);
   }
@@ -871,5 +993,6 @@ async function reprintKOT(orderId) {
 module.exports = {
   generateAndQueueKOTs,
   generateAndQueueReceipt,
-  reprintKOT
+  reprintKOT,
+  sendToWindowsSpooler
 };

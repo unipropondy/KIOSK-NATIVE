@@ -1,4 +1,5 @@
 import { API_URL } from "@/config";
+import { Platform } from "react-native";
 import BillPDFGenerator from "./BillPDFGenerator";
 import {
   formatToSingaporeDate,
@@ -1034,12 +1035,6 @@ export const UniversalPrinter = {
     isReprint: boolean = false
   ): Promise<boolean> {
     try {
-      const isOnline = await isBridgeOnline();
-      if (!isOnline) {
-        console.log("📡 [Web] Bridge OFFLINE — PDF fallback");
-        return await offerPDFFallback(saleData, outletId, t, discountInfo);
-      }
-
       const company = await BillPDFGenerator.loadSettings(outletId);
       const text = formatThermalTextWithDiscount(saleData, company, discountInfo);
 
@@ -1052,13 +1047,30 @@ export const UniversalPrinter = {
         String(tableNo).toUpperCase() === "TAKE AWAY";
 
       const pType = isTakeaway ? 3 : 1;
-      console.log(`📡 [Web] Queueing receipt to printer type: ${pType}`);
-      const success = await queuePrintJob(pType, undefined, text);
-      if (success) return true;
+      console.log(`📡 Queueing receipt to backend (printer type: ${pType})`);
+      
+      // Always notify backend queue so backend / USB spooler / bridge prints it
+      let queuePromise = queuePrintJob(pType, undefined, text).catch(() => false);
 
-      // Fallback
-      console.warn("⚠️ [Web Receipt] Bridge queue failed — PDF fallback");
-      return await offerPDFFallback(saleData, outletId, t, discountInfo);
+      // If running on native device (Android APK / iOS), also print directly from device
+      if (Platform.OS !== "web") {
+        console.log("📱 Native device (APK) detected: printing directly from device...");
+        try {
+          await BillPDFGenerator.printReceipt(saleData, outletId);
+        } catch (nativeErr) {
+          console.warn("Device direct print error:", nativeErr);
+        }
+      }
+
+      const queueSuccess = await queuePromise;
+      if (queueSuccess) return true;
+
+      // Web iframe fallback if queue wasn't accepted
+      if (Platform.OS === "web") {
+        return await offerPDFFallback(saleData, outletId, t, discountInfo);
+      }
+
+      return true;
     } catch (err) {
       console.warn("[UniversalPrinter] smartPrint error, PDF fallback:", err);
       return await offerPDFFallback(saleData, outletId, t, discountInfo);
