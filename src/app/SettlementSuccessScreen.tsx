@@ -13,6 +13,7 @@ import {
   View,
 } from "react-native";
 import { API } from "@/config";
+import BillPDFGenerator from "../components/BillPDFGenerator";
 import BillPrompt from "../components/BillPrompt";
 import UniversalPrinter from "../components/UniversalPrinter";
 
@@ -257,18 +258,16 @@ export default function SettlementSuccessScreen({
           price: Number(item.PricePerUnit || item.price || 0),
           modifiers: item.modifiers || [],
         })),
-        total: calculatedSubtotal > 0 ? calculatedSubtotal : grandTotal,
+        extraCharge: Number(extraCharge || 0),
+        total: calculatedSubtotal > 0 ? (calculatedSubtotal + Number(extraCharge || 0)) : grandTotal,
         paymentMethod: "PAID",
       };
 
-      const success = await UniversalPrinter.smartPrint(saleData);
-      if (!isAuto) {
-        if (success) {
-          Alert.alert("Receipt Sent", "Print job sent to receipt printer.");
-        } else {
-          Alert.alert("Print Notice", "Unable to reach printer directly. You can use Share PDF to save a copy.");
-        }
-      }
+      // 1. Direct system print dialog (shows exactly what the user liked)
+      await BillPDFGenerator.printReceipt(saleData);
+
+      // 2. Also send to background queue for physical thermal printers if connected
+      UniversalPrinter.smartPrint(saleData).catch(() => {});
     } catch (e: any) {
       console.log("Print error:", e);
       if (!isAuto) {
@@ -277,7 +276,7 @@ export default function SettlementSuccessScreen({
     } finally {
       setIsPrinting(false);
     }
-  }, [orderId, orderNumber, tableNo, orderItems, grandTotal]);
+  }, [orderId, orderNumber, tableNo, orderItems, grandTotal, extraCharge]);
 
   // Note: Backend generateAndQueueReceipt() automatically prints the receipt on payment completion.
   // We keep handlePrintReceipt available for manual user reprints if they click a print button,
