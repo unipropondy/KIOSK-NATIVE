@@ -6,6 +6,29 @@ const path = require("path");
 const { exec } = require("child_process");
 
 /**
+ * Checks if a USB printer is physically connected/installed on this machine.
+ * Prevents systems without the USB printer from attempting or receiving USB prints.
+ */
+function isUsbPrinterConnected(printerName = '') {
+  if (process.platform !== 'win32') return false;
+  try {
+    const { execSync } = require('child_process');
+    const stdout = execSync('powershell -NoProfile -Command Get-Printer', { timeout: 3000 }).toString();
+    const lines = stdout.split(/\r?\n/);
+    for (const line of lines) {
+      if (/USB/i.test(line)) {
+        if (!printerName || line.toLowerCase().includes(printerName.toLowerCase())) {
+          return true;
+        }
+      }
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+}
+
+/**
  * Sends raw ESC/POS binary directly to Windows Print Spooler (USB / local / shared printers).
  */
 function sendToWindowsSpooler(printerName, content) {
@@ -16,6 +39,13 @@ function sendToWindowsSpooler(printerName, content) {
     } else if (cleanName.startsWith('\\\\')) {
       const parts = cleanName.split('\\').filter(Boolean);
       if (parts.length === 1) cleanName = parts[0];
+    }
+
+    // Verify USB printer is actually attached to this machine
+    if (!isUsbPrinterConnected(cleanName)) {
+      const msg = `USB printer '${cleanName}' is not physically connected to this system. Printing skipped.`;
+      console.warn(`[sendToWindowsSpooler] ${msg}`);
+      return reject(new Error(msg));
     }
 
     const tmpFile = path.join(os.tmpdir(), `kiosk_usb_print_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.bin`);
@@ -997,5 +1027,6 @@ module.exports = {
   generateAndQueueKOTs,
   generateAndQueueReceipt,
   reprintKOT,
-  sendToWindowsSpooler
+  sendToWindowsSpooler,
+  isUsbPrinterConnected
 };

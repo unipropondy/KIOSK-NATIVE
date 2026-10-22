@@ -18,7 +18,25 @@ const CONFIG = {
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, execSync } = require('child_process');
+
+function isUsbPrinterConnected(printerName = '') {
+  if (process.platform !== 'win32') return false;
+  try {
+    const stdout = execSync('powershell -NoProfile -Command Get-Printer', { timeout: 3000 }).toString();
+    const lines = stdout.split(/\r?\n/);
+    for (const line of lines) {
+      if (/USB/i.test(line)) {
+        if (!printerName || line.toLowerCase().includes(printerName.toLowerCase())) {
+          return true;
+        }
+      }
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+}
 
 function sendToWindowsSpooler(printerName, content) {
   return new Promise((resolve, reject) => {
@@ -28,6 +46,12 @@ function sendToWindowsSpooler(printerName, content) {
     } else if (cleanName.startsWith('\\\\')) {
       const parts = cleanName.split('\\').filter(Boolean);
       if (parts.length === 1) cleanName = parts[0];
+    }
+
+    if (!isUsbPrinterConnected(cleanName)) {
+      const msg = `USB printer '${cleanName}' is NOT physically connected to this system. Printing skipped.`;
+      console.warn(`[sendToWindowsSpooler] ${msg}`);
+      return reject(new Error(msg));
     }
 
     const tmpFile = path.join(os.tmpdir(), `bridge_usb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.bin`);
