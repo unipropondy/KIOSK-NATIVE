@@ -92,8 +92,8 @@ export default function SettlementSuccessScreen({
   const [orderNumber, setOrderNumber] = useState<string>("");
   const [statusCode, setStatusCode] = useState<number>(2); // default: preparing
 
-  // Order Details / Preview popup state - automatically open receipt preview
-  const [showOrderDetails, setShowOrderDetails] = useState(true);
+  // Order Details popup state - kept false so modal does not block screen
+  const [showOrderDetails, setShowOrderDetails] = useState(false);
   const [orderItems, setOrderItems] = useState<any[]>(initialItems || []);
   const [extraCharge, setExtraCharge] = useState<number>(initialExtraCharge || 0);
   const [itemsLoading, setItemsLoading] = useState(false);
@@ -101,6 +101,7 @@ export default function SettlementSuccessScreen({
   const [isPrinting, setIsPrinting] = useState(false);
   const [isShareLoading, setIsShareLoading] = useState(false);
   const autoReturnTimerRef = useRef<any>(null);
+  const hasAutoPreviewedRef = useRef(false);
 
   // Read stored values if not passed as props
   useEffect(() => {
@@ -195,38 +196,12 @@ export default function SettlementSuccessScreen({
     }
   }, [orderId, orderItems.length]);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      loadOrderDetails();
-      loadOrderItems();
-    }, 0);
-    const interval = setInterval(loadOrderDetails, 10000);
-
-    // Auto-return timer (25 seconds so user has sufficient time to view/print preview)
-    autoReturnTimerRef.current = setTimeout(() => {
-      handleReturn();
-    }, 25000);
-
-    return () => {
-      clearTimeout(timer);
-      clearInterval(interval);
-      if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
-    };
-  }, [loadOrderDetails, loadOrderItems, handleReturn]);
-
-  const handleOpenOrderDetails = () => {
-    setShowOrderDetails(true);
-    loadOrderItems();
-  };
-
   const calculatedItemsTotal = (orderItems || []).reduce(
-    (sum, item) => sum + Number(item.LineTotal || (Number(item.PricePerUnit || item.price || 0) * Number(item.Quantity || item.qty || 1))),
+    (sum, item) => sum + Number(item.LineTotal || (Number(item.PricePerUnit || item.price || item.Price || 0) * Number(item.Quantity || item.qty || 1))),
     0
   );
 
   const grandTotal = calculatedItemsTotal + Number(extraCharge || 0);
-
-  const hasAutoPrintedRef = useRef(false);
 
   const handlePrintReceipt = useCallback(async (isAuto = false) => {
     setIsPrinting(true);
@@ -244,7 +219,7 @@ export default function SettlementSuccessScreen({
       }
 
       const calculatedSubtotal = (currentItems || []).reduce(
-        (sum, item) => sum + Number(item.LineTotal || (Number(item.PricePerUnit || item.price || 0) * Number(item.Quantity || item.qty || 1))),
+        (sum, item) => sum + Number(item.LineTotal || (Number(item.PricePerUnit || item.price || item.Price || 0) * Number(item.Quantity || item.qty || 1))),
         0
       );
 
@@ -253,9 +228,9 @@ export default function SettlementSuccessScreen({
         invoiceNumber: orderNumber || orderId,
         tableNo,
         items: (currentItems || []).map((item: any) => ({
-          name: item.DishName || item.name || "Item",
-          quantity: item.Quantity || item.qty || 1,
-          price: Number(item.PricePerUnit || item.price || 0),
+          name: item.DishName || item.Name || item.name || "Item",
+          quantity: Number(item.Quantity || item.qty || 1),
+          price: Number(item.PricePerUnit ?? item.price ?? item.Price ?? 0),
           modifiers: item.modifiers || [],
         })),
         extraCharge: Number(extraCharge || 0),
@@ -263,10 +238,10 @@ export default function SettlementSuccessScreen({
         paymentMethod: "PAID",
       };
 
-      // 1. Direct system print dialog (shows exactly what the user liked)
+      // Direct system print dialog preview
       await BillPDFGenerator.printReceipt(saleData);
 
-      // 2. Also send to background queue for physical thermal printers if connected
+      // Also send to background queue for physical thermal printers if connected
       UniversalPrinter.smartPrint(saleData).catch(() => {});
     } catch (e: any) {
       console.log("Print error:", e);
@@ -277,6 +252,39 @@ export default function SettlementSuccessScreen({
       setIsPrinting(false);
     }
   }, [orderId, orderNumber, tableNo, orderItems, grandTotal, extraCharge]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadOrderDetails();
+      loadOrderItems();
+    }, 0);
+    const interval = setInterval(loadOrderDetails, 10000);
+
+    // Auto-open thermal receipt preview dialog (what user requested: "I LIKE THIS MODEL PREVIEW")
+    const previewTimer = setTimeout(() => {
+      if (!hasAutoPreviewedRef.current) {
+        hasAutoPreviewedRef.current = true;
+        handlePrintReceipt(true);
+      }
+    }, 600);
+
+    // Auto-return timer (35 seconds so user has sufficient time to view/print preview)
+    autoReturnTimerRef.current = setTimeout(() => {
+      handleReturn();
+    }, 35000);
+
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(previewTimer);
+      clearInterval(interval);
+      if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
+    };
+  }, [loadOrderDetails, loadOrderItems, handleReturn, handlePrintReceipt]);
+
+  const handleOpenOrderDetails = () => {
+    setShowOrderDetails(true);
+    loadOrderItems();
+  };
 
   // Note: Backend generateAndQueueReceipt() automatically prints the receipt on payment completion.
   // We keep handlePrintReceipt available for manual user reprints if they click a print button,
@@ -299,9 +307,9 @@ export default function SettlementSuccessScreen({
         invoiceNumber: orderNumber || orderId,
         tableNo,
         items: currentItems.map((item: any) => ({
-          name: item.DishName || item.name || "Item",
-          quantity: item.Quantity || item.qty || 1,
-          price: Number(item.PricePerUnit || item.price || 0),
+          name: item.DishName || item.Name || item.name || "Item",
+          quantity: Number(item.Quantity || item.qty || 1),
+          price: Number(item.PricePerUnit ?? item.price ?? item.Price ?? 0),
           modifiers: item.modifiers || [],
         })),
         total: grandTotal,
@@ -477,8 +485,12 @@ export default function SettlementSuccessScreen({
                     <Text style={[styles.colHeaderText, { width: 70, textAlign: "right" }]}>TOTAL</Text>
                   </View>
 
-                  <ScrollView style={styles.itemsScroll}>
+                    <ScrollView style={styles.itemsScroll}>
                     {orderItems.map((item, idx) => {
+                      const itemName = item.DishName || item.Name || item.name || "Item";
+                      const itemQty = Number(item.Quantity || item.qty || 1);
+                      const itemPrice = Number(item.PricePerUnit ?? item.price ?? item.Price ?? 0);
+                      const itemTotal = Number(item.LineTotal ?? item.TotalDetailLineAmount ?? (itemPrice * itemQty));
                       const statusLabel =
                         STATUS_LABEL_MAP[item.StatusCode] || "PREPARING";
                       const statusColor =
@@ -486,11 +498,11 @@ export default function SettlementSuccessScreen({
 
                       return (
                         <View
-                          key={item.OrderDetailId || idx}
+                          key={item.OrderDetailId || item.id || idx}
                           style={styles.itemRow}
                         >
                           <View style={{ flex: 2, paddingRight: 8 }}>
-                            <Text style={styles.itemName}>{item.DishName}</Text>
+                            <Text style={styles.itemName}>{itemName}</Text>
                             {!!item.Remarks && (
                               <Text style={styles.itemRemarks}>
                                 📝 {item.Remarks}
@@ -515,12 +527,12 @@ export default function SettlementSuccessScreen({
                               </Text>
                             </View>
                           </View>
-                          <Text style={styles.itemQty}>×{item.Quantity}</Text>
+                          <Text style={styles.itemQty}>×{itemQty}</Text>
                           <Text style={styles.itemPrice}>
-                            ${Number(item.PricePerUnit || 0).toFixed(2)}
+                            ${itemPrice.toFixed(2)}
                           </Text>
                           <Text style={styles.itemTotal}>
-                            ${Number(item.LineTotal || 0).toFixed(2)}
+                            ${itemTotal.toFixed(2)}
                           </Text>
                         </View>
                       );
