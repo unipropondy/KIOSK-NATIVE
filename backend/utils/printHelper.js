@@ -845,12 +845,15 @@ async function generateAndQueueReceipt(orderId, paymentMode = 'ONLINE', passedEx
 
     const thermalText = formatThermalTextWithDiscount(saleData, company, discountInfo);
 
-<<<<<<< HEAD
-    // If running on Windows host and the printer is a local USB spooler printer (e.g. 'TD80 Printer')
+    // 7. Insert Print Job Queue
+    const jobId = crypto.randomUUID();
+    const storeId = "STORE_001";
+
     const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(printerIp).trim());
     let initialStatus = 'PENDING';
     let printedDirectly = false;
 
+    // If running on Windows host and the printer is a local USB spooler printer (e.g. 'TD80 Printer')
     if (!isIp && process.platform === "win32") {
       try {
         await sendToWindowsSpooler(printerIp, thermalText);
@@ -862,7 +865,7 @@ async function generateAndQueueReceipt(orderId, paymentMode = 'ONLINE', passedEx
       }
     }
 
-    // 7. Insert Print Job Queue (COMPLETED if direct spooler succeeded, avoiding bridge re-printing)
+    // Insert into PrintJobQueue (COMPLETED if direct spooler already printed, avoiding duplicate bridge printing)
     await pool.request()
       .input('JobId', sql.UniqueIdentifier, jobId)
       .input('StoreId', sql.NVarChar(50), storeId)
@@ -877,32 +880,6 @@ async function generateAndQueueReceipt(orderId, paymentMode = 'ONLINE', passedEx
       `);
 
     console.log(`[generateAndQueueReceipt] Queued Receipt job ${jobId} for Printer '${printerName}' (${printerIp}) with status '${initialStatus}'`);
-=======
-    // 7. Insert Print Job Queue ONLY if the receipt printer is a shared network IP
-    // For local USB printers (e.g. 'TD80 Printer' on a Kiosk), the kiosk device prints locally via Android print service
-    // so orders from other devices won't inadvertently fire the USB printer across the network!
-    const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(printerIp).trim());
-    if (isIp) {
-      const jobId = crypto.randomUUID();
-      const storeId = "STORE_001";
-
-      await pool.request()
-        .input('JobId', sql.UniqueIdentifier, jobId)
-        .input('StoreId', sql.NVarChar(50), storeId)
-        .input('PrinterName', sql.NVarChar(100), printerName)
-        .input('PrinterIp', sql.NVarChar(100), printerIp)
-        .input('PrinterPort', sql.Int, 9100)
-        .input('Content', sql.NVarChar(sql.MAX), thermalText)
-        .query(`
-          INSERT INTO PrintJobQueue (JobId, StoreId, PrinterName, PrinterIp, PrinterPort, Content, Status, CreatedOn, Attempts)
-          VALUES (@JobId, @StoreId, @PrinterName, @PrinterIp, @PrinterPort, @Content, 'PENDING', GETDATE(), 0)
-        `);
-
-      console.log(`[generateAndQueueReceipt] Queued Receipt job ${jobId} for Network Printer '${printerName}' (${printerIp})`);
-    } else {
-      console.log(`[generateAndQueueReceipt] Skipping backend print queue for local USB/client printer '${printerName}' (${printerIp}) - handled directly by device.`);
-    }
->>>>>>> cd696d085e3d09db7367beb17caf551349f4a99d
 
   } catch (err) {
     console.error("[generateAndQueueReceipt] Error:", err);
