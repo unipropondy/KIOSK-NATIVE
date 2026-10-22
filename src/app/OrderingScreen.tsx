@@ -113,6 +113,10 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const [tableNo, setTableNo] = useState("");
   const [tableId, setTableId] = useState("");
   const [currentOrderId, setCurrentOrderId] = useState<string | null>(null);
+  const [enableKioskTable, setEnableKioskTable] = useState<number>(0);
+  const [showTableModal, setShowTableModal] = useState(false);
+  const [availableTables, setAvailableTables] = useState<any[]>([]);
+  const [loadingTables, setLoadingTables] = useState(false);
 
   // Modifiers Modal State
   const [showModifier, setShowModifier] = useState(false);
@@ -356,6 +360,14 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
           setServiceChargePercent(Number(settingsRes.ServiceChargePercentage || 0));
           setGstPercent(Number(settingsRes.GSTPercentage || 0));
           setEnableCombo(Number(settingsRes.EnableCombo || 0));
+          const isKioskTableEnabled =
+            settingsRes.Enablekiosktable === 1 ||
+            settingsRes.Enablekiosktable === true ||
+            String(settingsRes.Enablekiosktable) === "1" ||
+            String(settingsRes.Enablekiosktable).toLowerCase() === "true"
+              ? 1
+              : 0;
+          setEnableKioskTable(isKioskTableEnabled);
         }
 
         if (Array.isArray(paymodesRes)) {
@@ -774,12 +786,74 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
     setCart([]);
   };
 
+  // Fetch available tables from TableMaster
+  const fetchAvailableTables = async () => {
+    setLoadingTables(true);
+    try {
+      const res = await fetch(`${API}/order/kiosk/available-tables`);
+      const data = await res.json();
+      if (data && data.success && Array.isArray(data.tables)) {
+        setAvailableTables(data.tables);
+      } else {
+        setAvailableTables([]);
+      }
+    } catch (e) {
+      console.warn("Error fetching available tables:", e);
+      setAvailableTables([]);
+    } finally {
+      setLoadingTables(false);
+    }
+  };
+
+  // Checkout button click handler
+  const handleCheckoutClick = async () => {
+    // Dynamically check latest Enablekiosktable from AppSettings
+    let shouldPromptTable = enableKioskTable === 1;
+    try {
+      const checkRes = await fetch(`${API}/app-settings`).then((r) => r.json()).catch(() => null);
+      if (checkRes && checkRes.success !== undefined) {
+        const val = checkRes.Enablekiosktable ?? checkRes.enablekiosktable;
+        shouldPromptTable = (val === 1 || val === true || String(val) === "1" || String(val).toLowerCase() === "true");
+        setEnableKioskTable(shouldPromptTable ? 1 : 0);
+      }
+    } catch (_) {}
+
+    if (shouldPromptTable) {
+      // If Enablekiosktable = 1, show table selection modal
+      fetchAvailableTables();
+      setShowTableModal(true);
+    } else {
+      // If Enablekiosktable = 0, continue directly with existing checkout process
+      handleProceedToPayment();
+    }
+  };
+
+  // User selects a table and continues existing checkout process
+  const handleSelectTableAndContinue = async (selectedTbl: any) => {
+    const selectedNo = selectedTbl.TableNo || selectedTbl.TableNumber || "";
+    const selectedId = selectedTbl.TableId || "";
+
+    setTableNo(String(selectedNo).trim());
+    setTableId(String(selectedId).trim());
+
+    try {
+      await AsyncStorage.setItem("tableNo", String(selectedNo).trim());
+      await AsyncStorage.setItem("tableId", String(selectedId).trim());
+    } catch (_) {}
+
+    setShowTableModal(false);
+    // Continue with existing checkout process with updated table
+    handleProceedToPayment(String(selectedId).trim());
+  };
+
   // Checkout / Place Order Flow
-  const handleProceedToPayment = async () => {
+  const handleProceedToPayment = async (overrideTableId?: string) => {
     console.log("Cart items:", cart);
     console.log("Subtotal:", subTotal);
     console.log("Calculated Total:", calculatedTotal);
     setTotalAmount(calculatedTotal);
+
+    const activeTableId = overrideTableId || tableId || "TAKEAWAY";
 
     // Save cart items to database (RestaurantOrderCur & RestaurantOrderDetailCur) immediately
     if (cart.length > 0) {
@@ -789,7 +863,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            tableId: tableId || "TAKEAWAY",
+            tableId: activeTableId,
             orderId: orderId,
             items: cart,
             userId: "00000000-0000-0000-0000-000000000000",
@@ -1380,7 +1454,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
 
               <TouchableOpacity
                 style={styles.checkoutBtn}
-                onPress={handleProceedToPayment}
+                onPress={handleCheckoutClick}
                 disabled={cart.length === 0}
                 activeOpacity={0.85}
               >
@@ -1393,6 +1467,98 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                 activeOpacity={0.85}
               >
                 <Text style={styles.backToMenuText}>← Back to Menu</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Table Selection Modal (Enablekiosktable = 1) ── */}
+      <Modal
+        visible={showTableModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowTableModal(false)}
+      >
+        <View style={styles.tableModalOverlay}>
+          <View style={styles.tableModalContainer}>
+            <View style={styles.tableModalHeader}>
+              <View>
+                <Text style={styles.tableModalTitle}>Select Your Table</Text>
+                <Text style={styles.tableModalSubtitle}>
+                  Please choose an available table to proceed with checkout
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.tableModalCloseBtn}
+                onPress={() => setShowTableModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.tableModalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {loadingTables ? (
+              <View style={styles.tableLoadingContainer}>
+                <ActivityIndicator size="large" color="#f97316" />
+                <Text style={styles.tableLoadingText}>Loading available tables...</Text>
+              </View>
+            ) : availableTables.length === 0 ? (
+              <View style={styles.tableEmptyContainer}>
+                <Text style={styles.tableEmptyText}>No available tables found.</Text>
+                <TouchableOpacity
+                  style={styles.tableContinueAnywayBtn}
+                  onPress={() => {
+                    setShowTableModal(false);
+                    handleProceedToPayment();
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.tableContinueAnywayText}>Continue Without Table</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <ScrollView
+                contentContainerStyle={styles.tableGrid}
+                showsVerticalScrollIndicator={false}
+              >
+                {availableTables.map((tbl: any) => {
+                  const tNum = tbl.TableNo || tbl.TableNumber || "";
+                  const isSelected = String(tableNo).trim() === String(tNum).trim();
+                  return (
+                    <TouchableOpacity
+                      key={String(tbl.TableId || tNum)}
+                      style={[
+                        styles.tableCard,
+                        isSelected && styles.tableCardSelected,
+                      ]}
+                      onPress={() => handleSelectTableAndContinue(tbl)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={styles.tableIconWrapper}>
+                        <Text style={styles.tableIcon}>🍽️</Text>
+                      </View>
+                      <Text style={[styles.tableCardNumber, isSelected && styles.tableCardNumberSelected]}>
+                        Table {tNum}
+                      </Text>
+                      {tbl.Seats ? (
+                        <Text style={styles.tableCardSeats}>
+                          {tbl.Seats} Seats
+                        </Text>
+                      ) : null}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            <View style={styles.tableModalFooter}>
+              <TouchableOpacity
+                style={styles.tableCancelBtn}
+                onPress={() => setShowTableModal(false)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.tableCancelBtnText}>Cancel</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -3280,5 +3446,176 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 16,
     fontWeight: "800",
+  },
+
+  /* ── TABLE SELECTION MODAL ── */
+  tableModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.75)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  tableModalContainer: {
+    backgroundColor: "#ffffff",
+    borderRadius: 24,
+    width: "100%",
+    maxWidth: 620,
+    maxHeight: "85%",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 25,
+    elevation: 10,
+    display: "flex",
+    flexDirection: "column",
+  },
+  tableModalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    paddingHorizontal: 24,
+    paddingTop: 24,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f1f5f9",
+  },
+  tableModalTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#0f172a",
+    marginBottom: 4,
+  },
+  tableModalSubtitle: {
+    fontSize: 14,
+    color: "#64748b",
+    fontWeight: "500",
+  },
+  tableModalCloseBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#f1f5f9",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tableModalCloseText: {
+    fontSize: 18,
+    color: "#475569",
+    fontWeight: "700",
+  },
+  tableLoadingContainer: {
+    paddingVertical: 60,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+  },
+  tableLoadingText: {
+    fontSize: 15,
+    color: "#64748b",
+    fontWeight: "600",
+  },
+  tableEmptyContainer: {
+    paddingVertical: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+    gap: 16,
+  },
+  tableEmptyText: {
+    fontSize: 16,
+    color: "#64748b",
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  tableContinueAnywayBtn: {
+    backgroundColor: "#f97316",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  tableContinueAnywayText: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  tableGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    padding: 20,
+    gap: 14,
+    justifyContent: "flex-start",
+  },
+  tableCard: {
+    width: "30.5%",
+    minWidth: 105,
+    backgroundColor: "#f8fafc",
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: "#e2e8f0",
+    paddingVertical: 18,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  tableCardSelected: {
+    borderColor: "#f97316",
+    backgroundColor: "#fff7ed",
+  },
+  tableIconWrapper: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  tableIcon: {
+    fontSize: 20,
+  },
+  tableCardNumber: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#1e293b",
+    textAlign: "center",
+  },
+  tableCardNumberSelected: {
+    color: "#ea580c",
+  },
+  tableCardSeats: {
+    fontSize: 12,
+    color: "#94a3b8",
+    fontWeight: "600",
+    marginTop: 4,
+  },
+  tableModalFooter: {
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    borderTopWidth: 1,
+    borderTopColor: "#f1f5f9",
+    alignItems: "flex-end",
+  },
+  tableCancelBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#f1f5f9",
+  },
+  tableCancelBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#475569",
   },
 });

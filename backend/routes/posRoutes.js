@@ -602,18 +602,21 @@ router.get("/company/settings", async (req, res) => {
       FROM CompanySettings
     `);
 
-    // Safely fetch Enablekotqr and EnableCombo — only if they exist in AppSettings
+    // Safely fetch Enablekotqr, EnableCombo, and Enablekiosktable — only if they exist in AppSettings
     let enableKotQr = 0;
     let enableCombo = 0;
+    let enableKioskTable = 0;
     try {
       const colCheck = await pool.request().query(`
         SELECT 
           (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'Enablekotqr') AS cntKot,
-          (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableCombo') AS cntCombo
+          (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'EnableCombo') AS cntCombo,
+          (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'Enablekiosktable') AS cntKioskTable
       `);
       let queryCols = [];
       if (colCheck.recordset[0]?.cntKot > 0) queryCols.push("Enablekotqr");
       if (colCheck.recordset[0]?.cntCombo > 0) queryCols.push("EnableCombo");
+      if (colCheck.recordset[0]?.cntKioskTable > 0) queryCols.push("Enablekiosktable");
 
       if (queryCols.length > 0) {
         const appSettings = await pool.request().query(`
@@ -624,6 +627,10 @@ router.get("/company/settings", async (req, res) => {
         }
         if (queryCols.includes("EnableCombo")) {
           enableCombo = Number(appSettings.recordset[0]?.EnableCombo || 0);
+        }
+        if (queryCols.includes("Enablekiosktable")) {
+          const val = appSettings.recordset[0]?.Enablekiosktable;
+          enableKioskTable = (val === true || val === 1 || String(val) === "1" || String(val).toLowerCase() === "true") ? 1 : 0;
         }
       }
     } catch (e) {
@@ -637,6 +644,7 @@ router.get("/company/settings", async (req, res) => {
 
     data.Enablekotqr = enableKotQr;
     data.EnableCombo = enableCombo;
+    data.Enablekiosktable = enableKioskTable;
 
     res.json(data);
 
@@ -651,14 +659,39 @@ router.get("/app-settings", async (req, res) => {
   try {
     const pool = await poolPromise;
 
-    const result = await pool.request().query(`
-      SELECT TOP 1 enablelogin AS EnableLogin
-      FROM AppSettings
-    `);
+    let enableLogin = 0;
+    let enableKioskTable = 0;
+
+    try {
+      const colCheck = await pool.request().query(`
+        SELECT 
+          (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'enablelogin') AS cntLogin,
+          (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AppSettings' AND COLUMN_NAME = 'Enablekiosktable') AS cntKioskTable
+      `);
+      let queryCols = [];
+      if (colCheck.recordset[0]?.cntLogin > 0) queryCols.push("enablelogin AS EnableLogin");
+      if (colCheck.recordset[0]?.cntKioskTable > 0) queryCols.push("Enablekiosktable");
+
+      if (queryCols.length > 0) {
+        const result = await pool.request().query(`
+          SELECT TOP 1 ${queryCols.join(", ")}
+          FROM AppSettings
+        `);
+        if (result.recordset.length > 0) {
+          enableLogin = Number(result.recordset[0]?.EnableLogin || 0);
+          const val = result.recordset[0]?.Enablekiosktable;
+          enableKioskTable = (val === true || val === 1 || String(val) === "1" || String(val).toLowerCase() === "true") ? 1 : 0;
+        }
+      }
+    } catch (err) {
+      console.warn("[app-settings] Query failed:", err.message);
+    }
 
     res.json({
       success: true,
-      enableLogin: Number(result.recordset[0]?.EnableLogin || 0)
+      enableLogin,
+      Enablekiosktable: enableKioskTable,
+      enablekiosktable: enableKioskTable
     });
   } catch (err) {
     res.status(500).json({

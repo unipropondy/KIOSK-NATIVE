@@ -542,6 +542,43 @@ router.get("/kiosk/tables", async (req, res) => {
   }
 });
 
+// GET all available tables from TableMaster for table selection
+router.get("/kiosk/available-tables", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT 
+        tm.TableId, 
+        tm.TableNumber AS TableNo,
+        tm.DiningSection,
+        tm.SortCode,
+        tm.Seats,
+        ISNULL(tm.Status, 0) AS Status
+      FROM TableMaster tm
+      WHERE (ISNULL(tm.Status, 0) = 0 OR tm.Status IS NULL)
+        AND tm.CurrentOrderId IS NULL
+        AND NOT EXISTS (
+          SELECT 1 
+          FROM RestaurantOrderCur ro 
+          WHERE (ro.Tableno = tm.TableNumber OR ro.Tableno = CAST(tm.TableId AS NVARCHAR(50)))
+            AND ro.isOrderClosed = 0
+            AND ro.StatusCode NOT IN (0, 3, 4)
+        )
+      ORDER BY 
+        CASE 
+          WHEN ISNUMERIC(tm.TableNumber) = 1 THEN CAST(tm.TableNumber AS INT)
+          ELSE 99999
+        END ASC,
+        tm.TableNumber ASC
+    `);
+
+    res.json({ success: true, tables: result.recordset });
+  } catch (err) {
+    console.error("[Kiosk] /kiosk/available-tables ERROR:", err.message);
+    res.status(500).json({ success: false, error: err.message, tables: [] });
+  }
+});
+
 router.post("/kiosk/start", async (req, res) => {
   try {
     let { tableId, tableNo, orderType } = req.body;
