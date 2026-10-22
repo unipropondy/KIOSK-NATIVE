@@ -795,49 +795,72 @@ async function generateAndQueueReceipt(orderId, paymentMode = 'ONLINE', passedEx
     };
 
     // 4. Determine Printer Type
+    // Receipts should print to Cashier (PrinterType = 1) or directly to the connected USB printer.
+    // If table is explicitly Takeaway (TW...), allow TakeAway (Type 3) only if Cashier/USB is not available.
     const isTakeaway = String(orderHeader.tableNo || "").toUpperCase().startsWith('TW') ||
       String(orderHeader.tableNo || "").toUpperCase() === 'TAKEAWAY';
-    const pType = isTakeaway ? 3 : 1;
 
     // 5. Fetch Printer IP dynamically from PrintMaster
     let printerIp = '';
-    let printerName = 'Counter Printer';
+    let printerName = 'Receipt Printer';
 
-    const printerRes = await pool.request()
-      .input('PrinterType', sql.Int, pType)
+    // Check if USB printer (e.g. 'TD80 Printer') is configured and connected
+    const usbCheckRes = await pool.request()
       .query(`
         SELECT TOP 1 
           ISNULL(NULLIF(LTRIM(RTRIM(PrinterIP)), ''), LTRIM(RTRIM(PrinterPath))) as PrinterIP, 
           PrinterName 
         FROM PrintMaster 
-        WHERE PrinterType = @PrinterType AND IsActive = 1 
+        WHERE (PrinterType = 1 OR PrinterName LIKE '%Receipt%' OR PrinterIP LIKE '%TD80%' OR PrinterPath LIKE '%TD80%')
+          AND IsActive = 1 
           AND (
             (PrinterIP IS NOT NULL AND LTRIM(RTRIM(PrinterIP)) <> '') OR 
             (PrinterPath IS NOT NULL AND LTRIM(RTRIM(PrinterPath)) <> '')
           )
+        ORDER BY CASE WHEN PrinterIP LIKE '%TD80%' OR PrinterPath LIKE '%TD80%' THEN 1 WHEN PrinterType = 1 THEN 2 ELSE 3 END
       `);
 
-    if (printerRes.recordset.length > 0 && printerRes.recordset[0].PrinterIP) {
-      printerIp = printerRes.recordset[0].PrinterIP;
-      printerName = printerRes.recordset[0].PrinterName;
+    if (usbCheckRes.recordset.length > 0 && usbCheckRes.recordset[0].PrinterIP) {
+      printerIp = usbCheckRes.recordset[0].PrinterIP;
+      printerName = usbCheckRes.recordset[0].PrinterName;
     } else {
-      // Dynamic fallback to Cashier or any active printer in PrintMaster
-      const cashierRes = await pool.request()
+      const pType = isTakeaway ? 3 : 1;
+      const printerRes = await pool.request()
+        .input('PrinterType', sql.Int, pType)
         .query(`
           SELECT TOP 1 
             ISNULL(NULLIF(LTRIM(RTRIM(PrinterIP)), ''), LTRIM(RTRIM(PrinterPath))) as PrinterIP, 
             PrinterName 
           FROM PrintMaster 
-          WHERE IsActive = 1 
+          WHERE PrinterType = @PrinterType AND IsActive = 1 
             AND (
               (PrinterIP IS NOT NULL AND LTRIM(RTRIM(PrinterIP)) <> '') OR 
               (PrinterPath IS NOT NULL AND LTRIM(RTRIM(PrinterPath)) <> '')
             )
-          ORDER BY CASE WHEN PrinterType = 1 THEN 1 WHEN PrinterType = 3 THEN 2 ELSE 3 END
         `);
-      if (cashierRes.recordset.length > 0 && cashierRes.recordset[0].PrinterIP) {
-        printerIp = cashierRes.recordset[0].PrinterIP;
-        printerName = cashierRes.recordset[0].PrinterName;
+
+      if (printerRes.recordset.length > 0 && printerRes.recordset[0].PrinterIP) {
+        printerIp = printerRes.recordset[0].PrinterIP;
+        printerName = printerRes.recordset[0].PrinterName;
+      } else {
+        // Dynamic fallback to Cashier or any active printer in PrintMaster
+        const cashierRes = await pool.request()
+          .query(`
+            SELECT TOP 1 
+              ISNULL(NULLIF(LTRIM(RTRIM(PrinterIP)), ''), LTRIM(RTRIM(PrinterPath))) as PrinterIP, 
+              PrinterName 
+            FROM PrintMaster 
+            WHERE IsActive = 1 
+              AND (
+                (PrinterIP IS NOT NULL AND LTRIM(RTRIM(PrinterIP)) <> '') OR 
+                (PrinterPath IS NOT NULL AND LTRIM(RTRIM(PrinterPath)) <> '')
+              )
+            ORDER BY CASE WHEN PrinterType = 1 THEN 1 WHEN PrinterType = 3 THEN 2 ELSE 3 END
+          `);
+        if (cashierRes.recordset.length > 0 && cashierRes.recordset[0].PrinterIP) {
+          printerIp = cashierRes.recordset[0].PrinterIP;
+          printerName = cashierRes.recordset[0].PrinterName;
+        }
       }
     }
 
