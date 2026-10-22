@@ -7,12 +7,99 @@ const CONFIG = {
   bridgeToken: 'unipro-pos-bridge-token-2026',
   pollIntervalMs: 1200,
   backends: [
+    { name: 'Kiosk Native Railway', url: 'https://kiosk-native-production.up.railway.app' },
     { name: 'RN POS Railway', url: 'https://kiosk-app-production-511f.up.railway.app' },
     { name: 'Local Backend', url: 'http://localhost:5000' },
     { name: 'QR POS Railway', url: 'https://online-qr-production.up.railway.app' },
     { name: 'ISLAND CAR WASH', url: 'https://smokedb-demo-production.up.railway.app' }
   ]
 };
+
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+
+function sendToWindowsSpooler(printerName, content) {
+  return new Promise((resolve, reject) => {
+    let cleanName = printerName.trim();
+    if (cleanName.toLowerCase().startsWith('\\\\localhost\\')) {
+      cleanName = cleanName.substring(13);
+    } else if (cleanName.startsWith('\\\\')) {
+      const parts = cleanName.split('\\').filter(Boolean);
+      if (parts.length === 1) cleanName = parts[0];
+    }
+
+    const tmpFile = path.join(os.tmpdir(), `bridge_usb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.bin`);
+    const payload = formatThermalText(content);
+
+    try {
+      fs.writeFileSync(tmpFile, payload);
+    } catch (e) {
+      return reject(e);
+    }
+
+    const safePrinterName = cleanName.replace(/'/g, "''");
+    const safeFilePath = tmpFile.replace(/'/g, "''");
+
+    const psScript = `
+$p = '${safePrinterName}';
+$f = '${safeFilePath}';
+if (-not (Test-Path $f)) { exit 1 }
+$b = [System.IO.File]::ReadAllBytes($f);
+$c = @'
+using System;
+using System.Runtime.InteropServices;
+public class RawPrinter {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public class DOCINFO1 { public string pDocName; public string pOutputFile; public string pDataType; }
+    [DllImport("winspool.drv", CharSet=CharSet.Unicode, ExactSpelling=false, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool ClosePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", CharSet=CharSet.Unicode, ExactSpelling=false, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool StartDocPrinter(IntPtr hPrinter, int Level, DOCINFO1 pDocInfo);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool EndDocPrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool StartPagePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool EndPagePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", ExactSpelling=true, CallingConvention=CallingConvention.StdCall, SetLastError=true)]
+    public static extern bool WritePrinter(IntPtr hPrinter, byte[] pBytes, int dwCount, out int dwWritten);
+
+    public static bool SendBytes(string printerName, byte[] bytes) {
+        IntPtr hPrinter;
+        if (!OpenPrinter(printerName, out hPrinter, IntPtr.Zero)) return false;
+        DOCINFO1 di = new DOCINFO1(); di.pDocName = "Kiosk USB Receipt"; di.pDataType = "RAW";
+        if (!StartDocPrinter(hPrinter, 1, di)) { ClosePrinter(hPrinter); return false; }
+        if (!StartPagePrinter(hPrinter)) { EndDocPrinter(hPrinter); ClosePrinter(hPrinter); return false; }
+        int written = 0; bool ok = WritePrinter(hPrinter, bytes, bytes.Length, out written);
+        EndPagePrinter(hPrinter); EndDocPrinter(hPrinter); ClosePrinter(hPrinter);
+        return ok && (written == bytes.Length);
+    }
+}
+'@;
+if (-not ([System.Management.Automation.PSTypeName]'RawPrinter').Type) { Add-Type -TypeDefinition $c }
+if ([RawPrinter]::SendBytes($p, $b)) { Write-Host "SUCCESS" } else { Write-Host "FAILED"; exit 1 }
+`;
+
+    const encodedScript = Buffer.from(psScript, 'utf16le').toString('base64');
+    const command = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedScript}`;
+
+    exec(command, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      if (err || stdout.trim() !== 'SUCCESS') {
+        const errorMsg = stderr.trim() || stdout.trim() || (err ? err.message : 'Spooler failed');
+        console.error(`[sendToWindowsSpooler] USB Printer '${cleanName}' print error:`, errorMsg);
+        reject(new Error(errorMsg));
+      } else {
+        console.log(`[sendToWindowsSpooler] USB Printer '${cleanName}' print SUCCESS.`);
+        resolve();
+      }
+    });
+  });
+}
 
 function formatThermalText(rawText) {
   let esc = Buffer.from([0x1B, 0x40]); // ESC @ (init)
@@ -54,6 +141,15 @@ function formatThermalText(rawText) {
 const printerLocks = new Map();
 
 function sendToPrinter(targetIp, targetPort, content) {
+  const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(targetIp || '').trim());
+  if (!isIp) {
+    const printerName = targetIp || 'TD80 Printer';
+    console.log(`[USB PRINTER] Routing print to Windows Spooler: '${printerName}'`);
+    return sendToWindowsSpooler(printerName, content)
+      .then(() => ({ success: true }))
+      .catch((err) => ({ success: false, error: err.message }));
+  }
+
   // If target IP is offline (192.168.0.245), fallback to online thermal printer (192.168.0.199)
   const ip = (targetIp === '192.168.0.245') ? '192.168.0.199' : targetIp;
   const port = targetPort || 9100;
@@ -135,6 +231,7 @@ function apiRequest(baseUrl, path, method, body) {
 }
 
 const activeJobs = new Set();
+const completedJobIds = new Set();
 
 async function pollBackend(backend) {
   try {
@@ -142,7 +239,7 @@ async function pollBackend(backend) {
     if (!res || !res.success || !Array.isArray(res.data) || res.data.length === 0) return;
 
     for (const job of res.data) {
-      if (activeJobs.has(job.JobId)) continue;
+      if (activeJobs.has(job.JobId) || completedJobIds.has(job.JobId)) continue;
       activeJobs.add(job.JobId);
 
       console.log(`[${backend.name}] Processing Job: ${job.JobId} for ${job.PrinterName} (${job.PrinterIp})`);
@@ -150,11 +247,13 @@ async function pollBackend(backend) {
 
       if (printResult.success) {
         console.log(`[${backend.name}] ✅ Job ${job.JobId} printed successfully!`);
-        // Call correct completion endpoint: POST /api/print-jobs/:jobId/complete
-        await apiRequest(backend.url, `/api/print-jobs/${job.JobId}/complete`, 'POST');
+        completedJobIds.add(job.JobId);
+        // Call completion endpoint on this backend and all shared backends
+        for (const b of CONFIG.backends) {
+          apiRequest(b.url, `/api/print-jobs/${job.JobId}/complete`, 'POST').catch(() => {});
+        }
       } else {
         console.log(`[${backend.name}] ❌ Job ${job.JobId} failed: ${printResult.error}`);
-        // Call correct failure endpoint: POST /api/print-jobs/:jobId/failed
         await apiRequest(backend.url, `/api/print-jobs/${job.JobId}/failed`, 'POST', { errorMessage: printResult.error });
       }
       activeJobs.delete(job.JobId);

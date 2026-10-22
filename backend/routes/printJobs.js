@@ -260,7 +260,24 @@ router.post('/', authenticateBridge, async (req, res) => {
 
     const jobId = require('crypto').randomUUID();
 
-    // Insert the job into PrintJobQueue
+    // Direct USB printing if not an IP address on Windows host
+    const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(printerIp).trim());
+    let initialStatus = 'PENDING';
+    let printedDirectly = false;
+
+    if (!isIp && process.platform === "win32") {
+      try {
+        const { sendToWindowsSpooler } = require('../utils/printHelper');
+        await sendToWindowsSpooler(printerIp, content);
+        initialStatus = 'COMPLETED';
+        printedDirectly = true;
+        console.log(`[print-jobs] Direct USB spooler printed job ${jobId} successfully.`);
+      } catch (e) {
+        console.warn('[print-jobs] Direct USB spooler print failed, queueing for bridge:', e.message);
+      }
+    }
+
+    // Insert the job into PrintJobQueue (COMPLETED if already printed by local spooler, so bridge does not print duplicate)
     await pool.request()
       .input('JobId', sql.UniqueIdentifier, jobId)
       .input('StoreId', sql.NVarChar(50), storeId)
@@ -268,26 +285,11 @@ router.post('/', authenticateBridge, async (req, res) => {
       .input('PrinterIp', sql.NVarChar(100), printerIp)
       .input('PrinterPort', sql.Int, 9100) // Default thermal printer raw TCP port
       .input('Content', sql.NVarChar(sql.MAX), content)
+      .input('Status', sql.NVarChar(20), initialStatus)
       .query(`
-        INSERT INTO PrintJobQueue (JobId, StoreId, PrinterName, PrinterIp, PrinterPort, Content, Status, CreatedOn)
-        VALUES (@JobId, @StoreId, @PrinterName, @PrinterIp, @PrinterPort, @Content, 'PENDING', GETDATE())
+        INSERT INTO PrintJobQueue (JobId, StoreId, PrinterName, PrinterIp, PrinterPort, Content, Status, CreatedOn, CompletedOn)
+        VALUES (@JobId, @StoreId, @PrinterName, @PrinterIp, @PrinterPort, @Content, @Status, GETDATE(), ${printedDirectly ? 'GETDATE()' : 'NULL'})
       `);
-
-    // Direct USB printing if not an IP address on Windows host
-    const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(printerIp).trim());
-    if (!isIp && process.platform === "win32") {
-      const { sendToWindowsSpooler } = require('../utils/printHelper');
-      sendToWindowsSpooler(printerIp, content)
-        .then(() => {
-          pool.request()
-            .input('JobId', sql.UniqueIdentifier, jobId)
-            .query("UPDATE PrintJobQueue SET Status = 'COMPLETED', CompletedOn = GETDATE() WHERE JobId = @JobId")
-            .catch(() => {});
-        })
-        .catch((e) => {
-          console.warn('[print-jobs] Direct USB spooler print failed:', e.message);
-        });
-    }
 
     res.json({ success: true, message: 'Print job queued successfully', jobId, printerIp, printerName });
   } catch (err) {

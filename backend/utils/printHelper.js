@@ -845,10 +845,23 @@ async function generateAndQueueReceipt(orderId, paymentMode = 'ONLINE', passedEx
 
     const thermalText = formatThermalTextWithDiscount(saleData, company, discountInfo);
 
-    // 7. Insert Print Job Queue
-    const jobId = crypto.randomUUID();
-    const storeId = "STORE_001";
+    // If running on Windows host and the printer is a local USB spooler printer (e.g. 'TD80 Printer')
+    const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(printerIp).trim());
+    let initialStatus = 'PENDING';
+    let printedDirectly = false;
 
+    if (!isIp && process.platform === "win32") {
+      try {
+        await sendToWindowsSpooler(printerIp, thermalText);
+        initialStatus = 'COMPLETED';
+        printedDirectly = true;
+        console.log(`[generateAndQueueReceipt] Direct USB spooler printed job ${jobId} successfully.`);
+      } catch (e) {
+        console.warn("[generateAndQueueReceipt] Direct spooler print failed, queueing for bridge:", e.message);
+      }
+    }
+
+    // 7. Insert Print Job Queue (COMPLETED if direct spooler succeeded, avoiding bridge re-printing)
     await pool.request()
       .input('JobId', sql.UniqueIdentifier, jobId)
       .input('StoreId', sql.NVarChar(50), storeId)
@@ -856,27 +869,13 @@ async function generateAndQueueReceipt(orderId, paymentMode = 'ONLINE', passedEx
       .input('PrinterIp', sql.NVarChar(100), printerIp)
       .input('PrinterPort', sql.Int, 9100)
       .input('Content', sql.NVarChar(sql.MAX), thermalText)
+      .input('Status', sql.NVarChar(20), initialStatus)
       .query(`
-        INSERT INTO PrintJobQueue (JobId, StoreId, PrinterName, PrinterIp, PrinterPort, Content, Status, CreatedOn, Attempts)
-        VALUES (@JobId, @StoreId, @PrinterName, @PrinterIp, @PrinterPort, @Content, 'PENDING', GETDATE(), 0)
+        INSERT INTO PrintJobQueue (JobId, StoreId, PrinterName, PrinterIp, PrinterPort, Content, Status, CreatedOn, CompletedOn, Attempts)
+        VALUES (@JobId, @StoreId, @PrinterName, @PrinterIp, @PrinterPort, @Content, @Status, GETDATE(), ${printedDirectly ? 'GETDATE()' : 'NULL'}, 0)
       `);
 
-    console.log(`[generateAndQueueReceipt] Queued Receipt job ${jobId} for Printer '${printerName}' (${printerIp})`);
-
-    // If running on Windows host and the printer is a local USB spooler printer (e.g. 'TD80 Printer')
-    const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(String(printerIp).trim());
-    if (!isIp && process.platform === "win32") {
-      sendToWindowsSpooler(printerIp, thermalText)
-        .then(() => {
-          pool.request()
-            .input('JobId', sql.UniqueIdentifier, jobId)
-            .query("UPDATE PrintJobQueue SET Status = 'COMPLETED', CompletedOn = GETDATE() WHERE JobId = @JobId")
-            .catch(() => {});
-        })
-        .catch(async (e) => {
-          console.warn("[generateAndQueueReceipt] Direct spooler print failed:", e.message);
-        });
-    }
+    console.log(`[generateAndQueueReceipt] Queued Receipt job ${jobId} for Printer '${printerName}' (${printerIp}) with status '${initialStatus}'`);
 
   } catch (err) {
     console.error("[generateAndQueueReceipt] Error:", err);
