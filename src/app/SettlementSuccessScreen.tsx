@@ -169,10 +169,10 @@ export default function SettlementSuccessScreen({
     }, 0);
     const interval = setInterval(loadOrderDetails, 10000);
 
-    // Auto-return to start page after 5 seconds
+    // Auto-return to start page after 8 seconds (allows background receipt print to dispatch)
     const autoReturnTimer = setTimeout(() => {
       handleReturn();
-    }, 5000);
+    }, 8000);
 
     return () => {
       clearTimeout(timer);
@@ -263,14 +263,12 @@ export default function SettlementSuccessScreen({
     }
   }, [orderId, orderNumber, tableNo, orderItems, grandTotal]);
 
-  // Auto-print receipt on native Android kiosk
+  // Auto-print receipt on order completion (Web and Android Kiosk)
   useEffect(() => {
     if (orderId && !hasAutoPrintedRef.current) {
       hasAutoPrintedRef.current = true;
-      if (Platform.OS !== "web") {
-        console.log("📱 Auto-triggering receipt print on Android Kiosk...");
-        handlePrintReceipt(true);
-      }
+      console.log("🖨️ Auto-triggering receipt print on order settlement...");
+      handlePrintReceipt(true);
     }
   }, [orderId, handlePrintReceipt]);
 
