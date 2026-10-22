@@ -268,14 +268,9 @@ export default function SettlementSuccessScreen({
     }
   }, [orderId, orderNumber, tableNo, orderItems, grandTotal]);
 
-  // Auto-print receipt on order completion (Web and Android Kiosk)
-  useEffect(() => {
-    if (orderId && !hasAutoPrintedRef.current) {
-      hasAutoPrintedRef.current = true;
-      console.log("🖨️ Auto-triggering receipt print on order settlement...");
-      handlePrintReceipt(true);
-    }
-  }, [orderId, handlePrintReceipt]);
+  // Note: Backend generateAndQueueReceipt() automatically prints the receipt on payment completion.
+  // We keep handlePrintReceipt available for manual user reprints if they click a print button,
+  // but DO NOT auto-trigger it to prevent duplicate prints.
 
   const handleSharePDF = async () => {
     try {
