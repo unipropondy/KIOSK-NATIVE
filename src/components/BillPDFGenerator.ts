@@ -1,5 +1,6 @@
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
+import { Platform } from "react-native";
 import { API_BASE, API_URL } from "@/config";
 import {
   formatToSingaporeDate,
@@ -278,6 +279,8 @@ export class BillPDFGenerator {
       })
       .join("");
 
+    const paymentMethod = (saleData.paymentMethod || saleData.payMode || saleData.PaymentMode || "CASH").toUpperCase();
+
     return `
       <!DOCTYPE html>
       <html>
@@ -285,25 +288,106 @@ export class BillPDFGenerator {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-          body { font-family: 'Courier New', Courier, monospace; background: #fff; margin: 0; padding: 4mm; color: #000; }
-          .receipt { width: 100%; max-width: 76mm; margin: 0 auto; }
-          .header-box { text-align: center; border-bottom: 2px solid #000; padding-bottom: 3mm; margin-bottom: 3mm; }
-          .company-name { font-size: 20px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; }
-          .company-address { font-size: 9px; line-height: 1.3; margin-top: 1mm; }
-          .bill-box { border: 1px solid #000; padding: 2mm; margin-bottom: 2mm; background: #fafafa; font-size: 11px; }
-          .detail-row { display: flex; justify-content: space-between; margin-bottom: 2px; }
-          .items-table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; font-size: 11px; }
-          .items-table th { border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; padding: 2mm 0; }
-          .items-table td { padding: 1.5mm 0; border-bottom: 1px dashed #ddd; }
+          @page { size: 80mm auto; margin: 0; }
+          * { box-sizing: border-box; }
+          body {
+            font-family: 'Courier New', Courier, monospace;
+            background: #fff;
+            margin: 0;
+            padding: 5mm 6mm;
+            color: #000;
+            font-size: 13px;
+          }
+          .receipt {
+            width: 100%;
+            max-width: 72mm;
+            margin: 0 auto;
+          }
+          .header-box {
+            text-align: center;
+            margin-bottom: 4mm;
+          }
+          .company-name {
+            font-size: 20px;
+            font-weight: 900;
+            letter-spacing: 2.5px;
+            text-transform: uppercase;
+            line-height: 1.2;
+          }
+          .company-address {
+            font-size: 10px;
+            line-height: 1.3;
+            margin-top: 2mm;
+          }
+          .divider-solid {
+            border-top: 2px solid #000;
+            margin: 3mm 0;
+          }
+          .bill-box {
+            border: 1.5px solid #000;
+            padding: 2.5mm 3mm;
+            margin-bottom: 3mm;
+            font-size: 12px;
+          }
+          .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 2px;
+          }
+          .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 3mm;
+            font-size: 12px;
+          }
+          .items-table th {
+            border-top: 2px solid #000;
+            border-bottom: 2px solid #000;
+            padding: 2mm 0;
+            font-size: 12px;
+            font-weight: 800;
+          }
+          .items-table td {
+            padding: 2mm 0;
+            border-bottom: 1px dotted #ccc;
+          }
           .item-name { text-align: left; font-weight: 700; }
-          .item-modifiers { font-size: 8px; color: #555; padding-left: 2mm; }
+          .item-modifiers { font-size: 10px; color: #444; padding-left: 2mm; }
           .item-qty { text-align: center; font-weight: 700; }
           .item-price { text-align: right; }
           .item-total { text-align: right; font-weight: 700; }
-          .totals { font-weight: 900; font-size: 11px; margin-bottom: 3mm; }
-          .total-row { display: flex; justify-content: space-between; margin-bottom: 2px; }
-          .grand-total { display: flex; justify-content: space-between; border-top: 2px solid #000; padding-top: 2mm; font-size: 14px; font-weight: 900; margin-top: 2mm; }
-          .footer { text-align: center; border-top: 1.5px solid #000; padding-top: 3mm; font-size: 11px; }
+          .totals {
+            border-top: 1.5px solid #000;
+            padding-top: 2mm;
+            font-size: 12px;
+            margin-bottom: 3mm;
+          }
+          .total-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 3px;
+          }
+          .grand-total {
+            display: flex;
+            justify-content: space-between;
+            border-top: 2px solid #000;
+            border-bottom: 2px solid #000;
+            padding: 2.5mm 0;
+            font-size: 14px;
+            font-weight: 900;
+            margin: 2.5mm 0;
+          }
+          .payment-section {
+            font-size: 12px;
+            margin-bottom: 4mm;
+          }
+          .footer {
+            text-align: center;
+            border-top: 1.5px solid #000;
+            padding-top: 3.5mm;
+            font-size: 12px;
+            line-height: 1.4;
+          }
         </style>
       </head>
       <body>
@@ -311,21 +395,16 @@ export class BillPDFGenerator {
           <div class="header-box">
             <div class="company-name">${company.name}</div>
             ${company.address ? `<div class="company-address">${company.address}</div>` : ""}
-            ${company.gstNo ? `<div style="font-size: 9px; font-weight: bold; margin-top: 1mm;">GST: ${company.gstNo}</div>` : ""}
-            ${company.phone ? `<div style="font-size: 9px;">Tel: ${company.phone}</div>` : ""}
+            ${company.gstNo ? `<div style="font-size: 10px; font-weight: bold; margin-top: 1mm;">GST: ${company.gstNo}</div>` : ""}
+            ${company.phone ? `<div style="font-size: 10px;">Tel: ${company.phone}</div>` : ""}
           </div>
 
           <div class="bill-box">
             <div class="detail-row">
-              <span>INVOICE NO:</span>
-              <span><b>${billNo}</b></span>
+              <span><b>INVOICE NO: ${billNo}</b></span>
+              ${saleData.tableNo ? `<span><b>TABLE: ${saleData.tableNo}</b></span>` : ""}
             </div>
-            ${saleData.tableNo ? `
-            <div class="detail-row">
-              <span>BAY / SERVICE:</span>
-              <span><b>${saleData.tableNo}</b></span>
-            </div>` : ""}
-            <div class="detail-row">
+            <div class="detail-row" style="margin-top: 2px;">
               <span>DATE:</span>
               <span>${formatToSingaporeDate(saleDate)} ${formatToSingaporeTime(saleDate)}</span>
             </div>
@@ -347,7 +426,7 @@ export class BillPDFGenerator {
 
           <div class="totals">
             <div class="total-row">
-              <span>Subtotal:</span>
+              <span>Sub Total:</span>
               <span>${currencySymbol}${amountWithoutGST.toFixed(2)}</span>
             </div>
             ${hasSC ? `
@@ -365,15 +444,31 @@ export class BillPDFGenerator {
               <span>GST (${gstRate}%):</span>
               <span>${currencySymbol}${gstAmount.toFixed(2)}</span>
             </div>` : ""}
-            <div class="grand-total">
-              <span>GRAND TOTAL:</span>
+          </div>
+
+          <div class="grand-total">
+            <span>GRAND TOTAL:</span>
+            <span>${currencySymbol}${finalTotal.toFixed(2)}</span>
+          </div>
+
+          <div class="payment-section">
+            <div class="total-row">
+              <span>PAYMENT:</span>
+              <span><b>${paymentMethod}</b></span>
+            </div>
+            <div class="total-row">
+              <span>PAID:</span>
               <span>${currencySymbol}${finalTotal.toFixed(2)}</span>
+            </div>
+            <div class="total-row">
+              <span>CHANGE:</span>
+              <span>${currencySymbol}0.00</span>
             </div>
           </div>
 
           <div class="footer">
-            <div style="font-weight: 800; font-size: 13px; margin-bottom: 2mm;">THANK YOU! PLEASE COME AGAIN!</div>
-            <div>RED BAY CAR WASH & CAFE</div>
+            <div style="font-weight: 800; font-size: 13px; margin-bottom: 1.5mm;">THANK YOU! COME AGAIN!</div>
+            <div style="font-size: 11px; letter-spacing: 0.5px;">SMART-CAFE BY UNIPROSG</div>
           </div>
         </div>
       </body>
@@ -384,10 +479,50 @@ export class BillPDFGenerator {
   static async printReceipt(saleData: any, userId?: string): Promise<boolean> {
     try {
       const html = await this.generateHTML(saleData, userId);
+
+      // On Web: print via dedicated hidden iframe so browser prints ONLY the receipt document
+      if (Platform.OS === "web" || typeof window !== "undefined") {
+        if (typeof document !== "undefined") {
+          const iframeId = "receipt-thermal-print-iframe";
+          let frame = document.getElementById(iframeId) as HTMLIFrameElement | null;
+          if (!frame) {
+            frame = document.createElement("iframe");
+            frame.id = iframeId;
+            frame.style.position = "fixed";
+            frame.style.right = "0";
+            frame.style.bottom = "0";
+            frame.style.width = "0";
+            frame.style.height = "0";
+            frame.style.border = "0";
+            document.body.appendChild(frame);
+          }
+          const doc = frame.contentWindow?.document || frame.contentDocument;
+          if (doc) {
+            doc.open();
+            doc.write(html);
+            doc.close();
+
+            return new Promise((resolve) => {
+              let printed = false;
+              const trigger = () => {
+                if (printed) return;
+                printed = true;
+                frame?.contentWindow?.focus();
+                frame?.contentWindow?.print();
+                resolve(true);
+              };
+              frame?.contentWindow?.addEventListener("load", trigger);
+              setTimeout(trigger, 400);
+            });
+          }
+        }
+      }
+
+      // Native (iOS/Android): use Expo Print module
       await Print.printAsync({ html });
       return true;
     } catch (e) {
-      console.error("Native Print error:", e);
+      console.error("Print error:", e);
       return false;
     }
   }
