@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -204,7 +204,14 @@ export default function SettlementSuccessScreen({
     loadOrderItems();
   };
 
-  const handlePrintReceipt = async () => {
+  const grandTotal = (orderItems || []).reduce(
+    (sum, item) => sum + Number(item.LineTotal || 0),
+    0
+  );
+
+  const hasAutoPrintedRef = useRef(false);
+
+  const handlePrintReceipt = useCallback(async (isAuto = false) => {
     setIsPrinting(true);
     setShowPrintPrompt(false);
     try {
@@ -219,33 +226,53 @@ export default function SettlementSuccessScreen({
         }
       }
 
+      const calculatedSubtotal = (currentItems || []).reduce(
+        (sum, item) => sum + Number(item.LineTotal || (Number(item.PricePerUnit || item.price || 0) * Number(item.Quantity || item.qty || 1))),
+        0
+      );
+
       const saleData = {
         orderId: orderNumber || orderId,
         invoiceNumber: orderNumber || orderId,
         tableNo,
-        items: currentItems.map((item: any) => ({
+        items: (currentItems || []).map((item: any) => ({
           name: item.DishName || item.name || "Item",
           quantity: item.Quantity || item.qty || 1,
           price: Number(item.PricePerUnit || item.price || 0),
           modifiers: item.modifiers || [],
         })),
-        total: grandTotal,
+        total: calculatedSubtotal > 0 ? calculatedSubtotal : grandTotal,
         paymentMethod: "PAID",
       };
 
       const success = await UniversalPrinter.smartPrint(saleData);
-      if (success) {
-        Alert.alert("Receipt Sent", "Print job sent to receipt printer.");
-      } else {
-        Alert.alert("Print Notice", "Unable to reach printer directly. You can use Share PDF to save a copy.");
+      if (!isAuto) {
+        if (success) {
+          Alert.alert("Receipt Sent", "Print job sent to receipt printer.");
+        } else {
+          Alert.alert("Print Notice", "Unable to reach printer directly. You can use Share PDF to save a copy.");
+        }
       }
     } catch (e: any) {
       console.log("Print error:", e);
-      Alert.alert("Print Error", e.message || "Failed to print receipt.");
+      if (!isAuto) {
+        Alert.alert("Print Error", e.message || "Failed to print receipt.");
+      }
     } finally {
       setIsPrinting(false);
     }
-  };
+  }, [orderId, orderNumber, tableNo, orderItems, grandTotal]);
+
+  // Auto-print receipt on native Android kiosk
+  useEffect(() => {
+    if (orderId && !hasAutoPrintedRef.current) {
+      hasAutoPrintedRef.current = true;
+      if (Platform.OS !== "web") {
+        console.log("📱 Auto-triggering receipt print on Android Kiosk...");
+        handlePrintReceipt(true);
+      }
+    }
+  }, [orderId, handlePrintReceipt]);
 
   const handleSharePDF = async () => {
     try {
@@ -290,10 +317,6 @@ export default function SettlementSuccessScreen({
 
   const activeStep = getActiveStep(statusCode);
   const currentStatus = STATUS_STEPS[activeStep];
-  const grandTotal = orderItems.reduce(
-    (sum, item) => sum + Number(item.LineTotal || 0),
-    0
-  );
   const isValidStatus = [2, 3, 4].includes(Number(statusCode));
 
   // Determine circle size responsive
