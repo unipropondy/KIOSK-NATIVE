@@ -22,6 +22,8 @@ type Props = {
   tableId?: string;
   isKiosk?: boolean;
   showActionButtons?: boolean;
+  extraCharge?: number;
+  initialItems?: any[];
   onReturnToOrder?: () => void;
 };
 
@@ -76,7 +78,9 @@ export default function SettlementSuccessScreen({
   tableNo: initialTableNo,
   tableId: initialTableId,
   isKiosk = true,
-  showActionButtons = false,
+  showActionButtons = true,
+  extraCharge: initialExtraCharge = 0,
+  initialItems = [],
   onReturnToOrder,
 }: Props) {
   const { width: screenWidth } = useWindowDimensions();
@@ -87,12 +91,15 @@ export default function SettlementSuccessScreen({
   const [orderNumber, setOrderNumber] = useState<string>("");
   const [statusCode, setStatusCode] = useState<number>(2); // default: preparing
 
-  // Order Details popup state
-  const [showOrderDetails, setShowOrderDetails] = useState(false);
-  const [orderItems, setOrderItems] = useState<any[]>([]);
+  // Order Details / Preview popup state - automatically open receipt preview
+  const [showOrderDetails, setShowOrderDetails] = useState(true);
+  const [orderItems, setOrderItems] = useState<any[]>(initialItems || []);
+  const [extraCharge, setExtraCharge] = useState<number>(initialExtraCharge || 0);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [showPrintPrompt, setShowPrintPrompt] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
+  const [isShareLoading, setIsShareLoading] = useState(false);
+  const autoReturnTimerRef = useRef<any>(null);
 
   // Read stored values if not passed as props
   useEffect(() => {
@@ -168,51 +175,55 @@ export default function SettlementSuccessScreen({
     }
   }, [onReturnToOrder]);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      loadOrderDetails();
-    }, 0);
-    const interval = setInterval(loadOrderDetails, 10000);
-
-    // Auto-return to start page after 8 seconds (allows background receipt print to dispatch)
-    const autoReturnTimer = setTimeout(() => {
-      handleReturn();
-    }, 8000);
-
-    return () => {
-      clearTimeout(timer);
-      clearInterval(interval);
-      clearTimeout(autoReturnTimer);
-    };
-  }, [loadOrderDetails, handleReturn]);
-
   // Load Items List for Modal
   const loadOrderItems = useCallback(async () => {
     if (!orderId) return;
+    if (orderItems.length > 0) return; // Keep existing items if passed
     setItemsLoading(true);
 
     try {
       const res = await fetch(`${API}/order/order-items/${orderId}`);
       const data = await res.json();
-      if (data && data.success) {
-        setOrderItems(data.items || []);
+      if (data && data.success && Array.isArray(data.items) && data.items.length > 0) {
+        setOrderItems(data.items);
       }
     } catch (err) {
       console.log("Failed to load order items:", err);
     } finally {
       setItemsLoading(false);
     }
-  }, [orderId]);
+  }, [orderId, orderItems.length]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadOrderDetails();
+      loadOrderItems();
+    }, 0);
+    const interval = setInterval(loadOrderDetails, 10000);
+
+    // Auto-return timer (25 seconds so user has sufficient time to view/print preview)
+    autoReturnTimerRef.current = setTimeout(() => {
+      handleReturn();
+    }, 25000);
+
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+      if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
+    };
+  }, [loadOrderDetails, loadOrderItems, handleReturn]);
 
   const handleOpenOrderDetails = () => {
     setShowOrderDetails(true);
     loadOrderItems();
   };
 
-  const grandTotal = (orderItems || []).reduce(
-    (sum, item) => sum + Number(item.LineTotal || 0),
+  const calculatedItemsTotal = (orderItems || []).reduce(
+    (sum, item) => sum + Number(item.LineTotal || (Number(item.PricePerUnit || item.price || 0) * Number(item.Quantity || item.qty || 1))),
     0
   );
+
+  const grandTotal = calculatedItemsTotal + Number(extraCharge || 0);
 
   const hasAutoPrintedRef = useRef(false);
 
@@ -517,12 +528,62 @@ export default function SettlementSuccessScreen({
                     })}
                   </ScrollView>
 
+                  {/* Breakdown & Extra Charge */}
+                  {Number(extraCharge) > 0 && (
+                    <View style={styles.breakdownRow}>
+                      <Text style={styles.breakdownLabel}>Subtotal</Text>
+                      <Text style={styles.breakdownValue}>${calculatedItemsTotal.toFixed(2)}</Text>
+                    </View>
+                  )}
+                  {Number(extraCharge) > 0 && (
+                    <View style={styles.breakdownRow}>
+                      <Text style={styles.breakdownLabel}>Service / Extra Charge</Text>
+                      <Text style={styles.breakdownValue}>+${Number(extraCharge).toFixed(2)}</Text>
+                    </View>
+                  )}
+
                   {/* Grand Total */}
                   <View style={styles.grandTotalRow}>
                     <Text style={styles.grandTotalLabel}>Grand Total</Text>
                     <Text style={styles.grandTotalValue}>
                       ${grandTotal.toFixed(2)}
                     </Text>
+                  </View>
+
+                  {/* Modal Action Buttons: Print & Share & Close */}
+                  <View style={styles.modalActionsRow}>
+                    <TouchableOpacity
+                      style={styles.modalPrintBtn}
+                      onPress={() => handlePrintReceipt(false)}
+                      disabled={isPrinting}
+                      activeOpacity={0.8}
+                    >
+                      {isPrinting ? (
+                        <ActivityIndicator size="small" color="#ffffff" />
+                      ) : (
+                        <>
+                          <Text style={styles.modalPrintBtnIcon}>🖨️</Text>
+                          <Text style={styles.modalPrintBtnText}>Print Bill</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.modalShareBtn}
+                      onPress={handleSharePDF}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.modalShareBtnIcon}>📤</Text>
+                      <Text style={styles.modalShareBtnText}>Share PDF</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.modalDoneBtn}
+                      onPress={() => setShowOrderDetails(false)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.modalDoneBtnText}>Done</Text>
+                    </TouchableOpacity>
                   </View>
                 </>
               )}
@@ -943,4 +1004,86 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: "#ea580c",
   },
+  breakdownRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  breakdownLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#64748b",
+  },
+  breakdownValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  modalActionsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 12,
+    alignItems: "center",
+  },
+  modalPrintBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#ea580c",
+    borderRadius: 14,
+    paddingVertical: 12,
+    shadowColor: "#ea580c",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  modalPrintBtnIcon: {
+    fontSize: 16,
+  },
+  modalPrintBtnText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#ffffff",
+  },
+  modalShareBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 14,
+    paddingVertical: 12,
+  },
+  modalShareBtnIcon: {
+    fontSize: 15,
+  },
+  modalShareBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  modalDoneBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalDoneBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#64748b",
+  },
 });
+

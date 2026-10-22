@@ -84,7 +84,7 @@ const parseDescriptionBullets = (desc?: string): string[] => {
 };
 
 type Props = {
-  onOrderCompleted?: (orderId: string) => void;
+  onOrderCompleted?: (orderId: string, metadata?: { items?: any[]; extraCharge?: number; totalAmount?: number }) => void;
   onLogout?: () => void;
 };
 
@@ -1074,6 +1074,10 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
       }
 
       const completedId = data.orderId || orderId || "1001";
+      const cartItemsSnapshot = [...cart];
+      const extraChargeSnapshot = parseFloat(String(extraCharge)) || 0;
+      const finalAmountSnapshot = parseFloat(finalPayable) || 0;
+
       setIsCartLoading(false);
       setShowCartPage(false);
       setCart([]);
@@ -1089,7 +1093,11 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
       ]);
 
       if (onOrderCompleted) {
-        onOrderCompleted(completedId);
+        onOrderCompleted(completedId, {
+          items: cartItemsSnapshot,
+          extraCharge: extraChargeSnapshot,
+          totalAmount: finalAmountSnapshot,
+        });
       }
     } catch (err: any) {
       setIsCartLoading(false);

@@ -11,6 +11,7 @@ type ScreenState = "login" | "start" | "ordering" | "settlement_success";
 export default function Index() {
   const [currentPage, setCurrentPage] = useState<ScreenState>("login");
   const [completedOrderId, setCompletedOrderId] = useState<string | null>(null);
+  const [completedOrderMeta, setCompletedOrderMeta] = useState<{ items?: any[]; extraCharge?: number; totalAmount?: number } | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
@@ -60,8 +61,12 @@ export default function Index() {
     return (
       <SettlementSuccessScreen
         orderId={completedOrderId}
+        initialItems={completedOrderMeta?.items || []}
+        extraCharge={completedOrderMeta?.extraCharge || 0}
+        showActionButtons={true}
         onReturnToOrder={() => {
           setCompletedOrderId(null);
+          setCompletedOrderMeta(null);
           setCurrentPage("start");
         }}
       />
@@ -71,8 +76,9 @@ export default function Index() {
   if (currentPage === "ordering") {
     return (
       <OrderingScreen
-        onOrderCompleted={(orderId) => {
+        onOrderCompleted={(orderId, metadata) => {
           setCompletedOrderId(orderId);
+          setCompletedOrderMeta(metadata || null);
           setCurrentPage("settlement_success");
         }}
         onLogout={() => {
