@@ -117,6 +117,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const [showTableModal, setShowTableModal] = useState(false);
   const [availableTables, setAvailableTables] = useState<any[]>([]);
   const [loadingTables, setLoadingTables] = useState(false);
+  const [selectedSection, setSelectedSection] = useState<string>("ALL");
 
   // Modifiers Modal State
   const [showModifier, setShowModifier] = useState(false);
@@ -1498,6 +1499,33 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
               </TouchableOpacity>
             </View>
 
+            {/* ── Section Filter Tabs (Section 1, 2, 3) ── */}
+            <View style={styles.sectionTabsContainer}>
+              {[
+                { id: "ALL", label: "All Tables" },
+                { id: "1", label: "Section 1" },
+                { id: "2", label: "Section 2" },
+                { id: "3", label: "Section 3" },
+              ].map((sec) => {
+                const isActive = selectedSection === sec.id;
+                const count = sec.id === "ALL" 
+                  ? availableTables.length 
+                  : availableTables.filter((t) => String(t.DiningSection).trim() === sec.id).length;
+                return (
+                  <TouchableOpacity
+                    key={sec.id}
+                    style={[styles.sectionTabBtn, isActive && styles.sectionTabBtnActive]}
+                    onPress={() => setSelectedSection(sec.id)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.sectionTabBtnText, isActive && styles.sectionTabBtnTextActive]}>
+                      {sec.label} ({count})
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
             {loadingTables ? (
               <View style={styles.tableLoadingContainer}>
                 <ActivityIndicator size="large" color="#f97316" />
@@ -1522,33 +1550,46 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                 contentContainerStyle={styles.tableGrid}
                 showsVerticalScrollIndicator={false}
               >
-                {availableTables.map((tbl: any) => {
-                  const tNum = tbl.TableNo || tbl.TableNumber || "";
-                  const isSelected = String(tableNo).trim() === String(tNum).trim();
-                  return (
-                    <TouchableOpacity
-                      key={String(tbl.TableId || tNum)}
-                      style={[
-                        styles.tableCard,
-                        isSelected && styles.tableCardSelected,
-                      ]}
-                      onPress={() => handleSelectTableAndContinue(tbl)}
-                      activeOpacity={0.8}
-                    >
-                      <View style={styles.tableIconWrapper}>
-                        <Text style={styles.tableIcon}>🍽️</Text>
-                      </View>
-                      <Text style={[styles.tableCardNumber, isSelected && styles.tableCardNumberSelected]}>
-                        Table {tNum}
-                      </Text>
-                      {tbl.Seats ? (
-                        <Text style={styles.tableCardSeats}>
-                          {tbl.Seats} Seats
+                {availableTables
+                  .filter((tbl: any) => {
+                    if (selectedSection === "ALL") return true;
+                    return String(tbl.DiningSection).trim() === selectedSection;
+                  })
+                  .map((tbl: any) => {
+                    const tNum = tbl.TableNo || tbl.TableNumber || "";
+                    const sec = tbl.DiningSection ? `Sec ${tbl.DiningSection}` : "";
+                    const isSelected = String(tableNo).trim() === String(tNum).trim();
+                    return (
+                      <TouchableOpacity
+                        key={String(tbl.TableId || tNum)}
+                        style={[
+                          styles.tableCard,
+                          isSelected && styles.tableCardSelected,
+                        ]}
+                        onPress={() => handleSelectTableAndContinue(tbl)}
+                        activeOpacity={0.8}
+                      >
+                        <View style={styles.tableCardTopRow}>
+                          <View style={styles.tableIconWrapper}>
+                            <Text style={styles.tableIcon}>🍽️</Text>
+                          </View>
+                          {sec ? (
+                            <View style={styles.tableSecBadge}>
+                              <Text style={styles.tableSecBadgeText}>{sec}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={[styles.tableCardNumber, isSelected && styles.tableCardNumberSelected]}>
+                          Table {tNum}
                         </Text>
-                      ) : null}
-                    </TouchableOpacity>
-                  );
-                })}
+                        {tbl.Seats ? (
+                          <Text style={styles.tableCardSeats}>
+                            {tbl.Seats} Seats
+                          </Text>
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
               </ScrollView>
             )}
 
@@ -3584,6 +3625,53 @@ const styles = StyleSheet.create({
   },
   tableIcon: {
     fontSize: 20,
+  },
+  /* ── SECTION FILTER TABS (Section 1, 2, 3) ── */
+  sectionTabsContainer: {
+    flexDirection: "row",
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 4,
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  sectionTabBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  sectionTabBtnActive: {
+    backgroundColor: "#f97316",
+    borderColor: "#f97316",
+  },
+  sectionTabBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#475569",
+  },
+  sectionTabBtnTextActive: {
+    color: "#ffffff",
+  },
+  tableCardTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    width: "100%",
+    marginBottom: 6,
+  },
+  tableSecBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: "#e2e8f0",
+  },
+  tableSecBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#475569",
   },
   tableCardNumber: {
     fontSize: 16,

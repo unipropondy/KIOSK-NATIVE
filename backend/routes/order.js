@@ -546,6 +546,7 @@ router.get("/kiosk/tables", async (req, res) => {
 router.get("/kiosk/available-tables", async (req, res) => {
   try {
     const pool = await poolPromise;
+    // Fetch all tables from DiningSection 1, 2, 3 that do not have an active open order in RestaurantOrderCur
     const result = await pool.request().query(`
       SELECT 
         tm.TableId, 
@@ -555,8 +556,7 @@ router.get("/kiosk/available-tables", async (req, res) => {
         tm.Seats,
         ISNULL(tm.Status, 0) AS Status
       FROM TableMaster tm
-      WHERE (ISNULL(tm.Status, 0) = 0 OR tm.Status IS NULL)
-        AND tm.CurrentOrderId IS NULL
+      WHERE tm.DiningSection IN ('1', '2', '3')
         AND NOT EXISTS (
           SELECT 1 
           FROM RestaurantOrderCur ro 
@@ -565,6 +565,12 @@ router.get("/kiosk/available-tables", async (req, res) => {
             AND ro.StatusCode NOT IN (0, 3, 4)
         )
       ORDER BY 
+        CASE 
+          WHEN tm.DiningSection = '1' THEN 1
+          WHEN tm.DiningSection = '2' THEN 2
+          WHEN tm.DiningSection = '3' THEN 3
+          ELSE 4
+        END ASC,
         CASE 
           WHEN ISNUMERIC(tm.TableNumber) = 1 THEN CAST(tm.TableNumber AS INT)
           ELSE 99999
