@@ -135,6 +135,11 @@ export default function SettlementSuccessScreen({
           setOrderNumber(String(dbOrderNumber).trim());
         }
 
+        const dbTableNo = data[0]?.Tableno || data[0]?.tableNo;
+        if (dbTableNo) {
+          setTableNo(String(dbTableNo).trim());
+        }
+
         const maxStatus = Math.max(
           ...data.map((d: any) => Number(d.StatusCode || 2))
         );

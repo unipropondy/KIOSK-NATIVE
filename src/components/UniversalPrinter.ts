@@ -1038,15 +1038,8 @@ export const UniversalPrinter = {
       const company = await BillPDFGenerator.loadSettings(outletId);
       const text = formatThermalTextWithDiscount(saleData, company, discountInfo);
 
-      const tableNo = saleData.tableNo || "";
-      const isTakeaway =
-        !tableNo ||
-        String(tableNo).trim() === "" ||
-        String(tableNo).toUpperCase().startsWith("TW") ||
-        String(tableNo).toUpperCase() === "TAKEAWAY" ||
-        String(tableNo).toUpperCase() === "TAKE AWAY";
-
-      const pType = isTakeaway ? 3 : 1;
+      // In POS/Kiosk mode, bill receipts always print to Cashier/Receipt printer (Type 1 = TD80 Printer)
+      const pType = preferredType || 1;
       console.log(`📡 Queueing receipt to backend (printer type: ${pType})`);
       
       // Always notify backend queue so backend / USB spooler / bridge prints it

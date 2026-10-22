@@ -2108,33 +2108,40 @@ router.post("/clear-cart", async (req, res) => {
 
     const pool = await poolPromise;
 
+    const isGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
+    const orderGuid = isGuid ? orderId : null;
+
+    if (!orderGuid) {
+      return res.json({ success: true, message: "Invalid order ID" });
+    }
+
     // Delete modifiers first
     await pool.request()
-      .input("orderId", sql.NVarChar(100), orderId)
+      .input("orderId", sql.UniqueIdentifier, orderGuid)
       .query(`
         DELETE FROM RestaurantmodifierdetailCur
         WHERE OrderDetailId IN (
           SELECT OrderDetailId
           FROM RestaurantOrderDetailCur
-          WHERE OrderId = TRY_CONVERT(uniqueidentifier, @orderId)
+          WHERE OrderId = @orderId
         )
       `);
 
     // Delete cart items
     await pool.request()
-      .input("orderId", sql.NVarChar(100), orderId)
+      .input("orderId", sql.UniqueIdentifier, orderGuid)
       .query(`
         DELETE FROM RestaurantOrderDetailCur
-        WHERE OrderId = TRY_CONVERT(uniqueidentifier, @orderId)
+        WHERE OrderId = @orderId
       `);
 
     // Clear order total
     await pool.request()
-      .input("orderId", sql.NVarChar(100), orderId)
+      .input("orderId", sql.UniqueIdentifier, orderGuid)
       .query(`
         UPDATE RestaurantOrderCur
         SET TotalAmount = 0
-        WHERE OrderId = TRY_CONVERT(uniqueidentifier, @orderId)
+        WHERE OrderId = @orderId
       `);
 
     res.json({
@@ -2308,8 +2315,11 @@ router.get("/order-items/:orderId", async (req, res) => {
     const { orderId } = req.params;
     const pool = await poolPromise;
 
+    const isGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
+
     const result = await pool.request()
       .input("orderNo", sql.NVarChar(50), orderId)
+      .input("orderGuid", sql.UniqueIdentifier, isGuid ? orderId : null)
       .query(`
         SELECT
             d.OrderDetailId,
@@ -2324,7 +2334,7 @@ router.get("/order-items/:orderId", async (req, res) => {
             d.ComboDetailsJSON,
             d.ModifiersJSON
         FROM RestaurantOrderDetailCur d
-        WHERE (d.OrderNumber = @orderNo OR d.OrderId = TRY_CONVERT(uniqueidentifier, @orderNo))
+        WHERE (d.OrderNumber = @orderNo OR (@orderGuid IS NOT NULL AND d.OrderId = @orderGuid))
           AND d.StatusCode NOT IN (0)
         UNION ALL
         SELECT
@@ -2341,10 +2351,10 @@ router.get("/order-items/:orderId", async (req, res) => {
             NULL AS ModifiersJSON
         FROM RestaurantOrderDetail rd
         WHERE (rd.OrderId IN (SELECT OrderId FROM RestaurantOrder WHERE OrderNumber = @orderNo)
-               OR rd.OrderId = TRY_CONVERT(uniqueidentifier, @orderNo))
+               OR (@orderGuid IS NOT NULL AND rd.OrderId = @orderGuid))
           AND NOT EXISTS (
             SELECT 1 FROM RestaurantOrderDetailCur cd 
-            WHERE (cd.OrderNumber = @orderNo OR cd.OrderId = TRY_CONVERT(uniqueidentifier, @orderNo))
+            WHERE (cd.OrderNumber = @orderNo OR (@orderGuid IS NOT NULL AND cd.OrderId = @orderGuid))
               AND cd.StatusCode NOT IN (0)
           )
       `);
