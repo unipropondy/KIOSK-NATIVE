@@ -257,22 +257,13 @@ export default function SettlementSuccessScreen({
     }, 0);
     const interval = setInterval(loadOrderDetails, 10000);
 
-    // Auto-open thermal receipt preview dialog (what user requested: "I LIKE THIS MODEL PREVIEW")
-    const previewTimer = setTimeout(() => {
-      if (!hasAutoPreviewedRef.current) {
-        hasAutoPreviewedRef.current = true;
-        handlePrintReceipt(true);
-      }
-    }, 600);
-
-    // Auto-return timer (35 seconds so user has sufficient time to view/print preview)
+    // Auto-return timer (30 seconds)
     autoReturnTimerRef.current = setTimeout(() => {
       handleReturn();
-    }, 35000);
+    }, 30000);
 
     return () => {
       clearTimeout(timer);
-      clearTimeout(previewTimer);
       clearInterval(interval);
       if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
     };
