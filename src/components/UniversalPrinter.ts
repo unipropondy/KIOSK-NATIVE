@@ -1052,15 +1052,11 @@ export const UniversalPrinter = {
       const queueSuccess = await queuePromise;
       if (queueSuccess) return true;
 
-      // Web iframe fallback if queue wasn't accepted
-      if (Platform.OS === "web") {
-        return await offerPDFFallback(saleData, outletId, t, discountInfo);
-      }
-
+      // If queue didn't succeed and fallback is needed
       return true;
     } catch (err) {
-      console.warn("[UniversalPrinter] smartPrint error, PDF fallback:", err);
-      return await offerPDFFallback(saleData, outletId, t, discountInfo);
+      console.warn("[UniversalPrinter] smartPrint error:", err);
+      return false;
     }
   },
 

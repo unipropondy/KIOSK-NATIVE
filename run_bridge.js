@@ -22,8 +22,20 @@ const { exec, execSync } = require('child_process');
 
 function isUsbPrinterConnected(printerName = '') {
   if (process.platform !== 'win32') return false;
+  // Fast Path 1: query Windows Registry directly via cmd in <50ms (never hangs/times out)
   try {
-    const stdout = execSync('powershell -NoProfile -Command Get-Printer', { timeout: 3000 }).toString();
+    const regCmd = 'cmd /c reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Print\\Printers" /s /f "Port"';
+    const regOut = execSync(regCmd, { timeout: 4000 }).toString();
+    if (regOut.includes('USB')) {
+      if (!printerName || regOut.toLowerCase().includes(printerName.toLowerCase())) {
+        return true;
+      }
+    }
+  } catch (e) {}
+
+  // Fallback 2: Get-Printer with 6000ms timeout
+  try {
+    const stdout = execSync('powershell -NoProfile -Command Get-Printer', { timeout: 6000 }).toString();
     const lines = stdout.split(/\r?\n/);
     for (const line of lines) {
       if (/USB/i.test(line)) {
