@@ -238,11 +238,8 @@ export default function SettlementSuccessScreen({
         paymentMethod: "PAID",
       };
 
-      // Direct system print dialog preview
+      // Direct system print dialog preview (single thermal receipt)
       await BillPDFGenerator.printReceipt(saleData);
-
-      // Also send to background queue for physical thermal printers if connected
-      UniversalPrinter.smartPrint(saleData).catch(() => {});
     } catch (e: any) {
       console.log("Print error:", e);
       if (!isAuto) {

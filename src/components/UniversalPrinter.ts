@@ -835,12 +835,6 @@ async function offerPDFFallback(
   discountInfo?: any
 ): Promise<boolean> {
   try {
-    if (typeof document !== "undefined") {
-      const company = await BillPDFGenerator.loadSettings(outletId);
-      const html = generateReceiptHTML(saleData, company, discountInfo);
-      printHtmlInIframe("receipt-print-iframe", html, 400);
-      return true;
-    }
     return await BillPDFGenerator.printReceipt(saleData, outletId);
   } catch (e) {
     console.error("[UniversalPrinter] offerPDFFallback failed:", e);
