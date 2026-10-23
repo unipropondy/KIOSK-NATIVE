@@ -7,11 +7,7 @@ const CONFIG = {
   bridgeToken: 'unipro-pos-bridge-token-2026',
   pollIntervalMs: 1200,
   backends: [
-    { name: 'Kiosk Native Railway', url: 'https://kiosk-native-production.up.railway.app' },
-    { name: 'RN POS Railway', url: 'https://kiosk-app-production-511f.up.railway.app' },
-    { name: 'Local Backend', url: 'http://localhost:5000' },
-    { name: 'QR POS Railway', url: 'https://online-qr-production.up.railway.app' },
-    { name: 'ISLAND CAR WASH', url: 'https://smokedb-demo-production.up.railway.app' }
+    { name: 'Kiosk Native Railway', url: 'https://kiosk-native-production.up.railway.app' }
   ]
 };
 
