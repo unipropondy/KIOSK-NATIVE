@@ -362,44 +362,7 @@ export default function SettlementSuccessScreen({
 
           {isValidStatus && (
             <>
-              {/* Action Buttons Row: Order Details & Print Bill */}
-              {showActionButtons && (
-                <View style={styles.actionButtonsRow}>
-                  <TouchableOpacity
-                    style={styles.detailsBtn}
-                    onPress={handleOpenOrderDetails}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.detailsBtnIcon}>📋</Text>
-                    <Text style={styles.detailsBtnText}>Order Details</Text>
-                  </TouchableOpacity>
 
-                  <TouchableOpacity
-                    style={[styles.detailsBtn, { borderColor: "#f97316" }]}
-                    onPress={() => setShowPrintPrompt(true)}
-                    disabled={isPrinting}
-                    activeOpacity={0.8}
-                  >
-                    {isPrinting ? (
-                      <ActivityIndicator size="small" color="#ea580c" />
-                    ) : (
-                      <>
-                        <Text style={styles.detailsBtnIcon}>🖨️</Text>
-                        <Text style={styles.detailsBtnText}>Print Bill</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.detailsBtn}
-                    onPress={handleSharePDF}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.detailsBtnIcon}>📤</Text>
-                    <Text style={styles.detailsBtnText}>Share PDF</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
             </>
           )}
 
