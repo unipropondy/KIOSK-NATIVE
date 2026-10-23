@@ -364,6 +364,23 @@ export default function SettlementSuccessScreen({
               : "Please confirm the order"}
           </Text>
 
+          {/* Print Receipt / Preview Button */}
+          <TouchableOpacity
+            style={styles.printReceiptBtn}
+            onPress={() => handlePrintReceipt(false)}
+            disabled={isPrinting}
+            activeOpacity={0.85}
+          >
+            {isPrinting ? (
+              <ActivityIndicator size="small" color="#ea580c" />
+            ) : (
+              <>
+                <Text style={styles.printReceiptBtnIcon}>🖨️</Text>
+                <Text style={styles.printReceiptBtnText}>Print / View Receipt</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
           {/* New Order / Return Button */}
           <TouchableOpacity
             style={styles.returnBtn}
@@ -750,10 +767,33 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#ffffff",
     textAlign: "center",
-    marginBottom: 24,
+    marginBottom: 20,
     textShadowColor: "rgba(0, 0, 0, 0.1)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
+  },
+  printReceiptBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    borderWidth: 2,
+    borderColor: "#ffffff",
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 999,
+    width: "100%",
+    maxWidth: 380,
+    marginBottom: 12,
+  },
+  printReceiptBtnIcon: {
+    fontSize: 18,
+  },
+  printReceiptBtnText: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#ffffff",
   },
   returnBtn: {
     flexDirection: "row",

@@ -1034,12 +1034,19 @@ export const UniversalPrinter = {
 
       // In POS/Kiosk mode, bill receipts always print to Cashier/Receipt printer (Type 1 = TD80 Printer)
       const pType = preferredType || 1;
-      console.log(`📡 Queueing receipt to backend (printer type: ${pType})`);
-      
-      // Always notify backend queue so backend / USB spooler / bridge prints it
-      let queuePromise = queuePrintJob(pType, undefined, text).catch(() => false);
 
-      // If running on native device (Android APK / iOS), also print directly from device
+      // If Bridge is online, queue to USB printer directly
+      const bridgeActive = await isBridgeOnline();
+      if (bridgeActive) {
+        console.log(`📡 Queueing receipt to backend (printer type: ${pType})`);
+        const queueSuccess = await queuePrintJob(pType, undefined, text).catch(() => false);
+        if (queueSuccess) {
+          console.log("✅ Receipt successfully printed via USB printer bridge!");
+          return true;
+        }
+      }
+
+      // If running on native device (Android APK / iOS), print directly from device
       if (Platform.OS !== "web") {
         console.log("📱 Native device (APK) detected: printing directly from device...");
         try {
@@ -1047,16 +1054,15 @@ export const UniversalPrinter = {
         } catch (nativeErr) {
           console.warn("Device direct print error:", nativeErr);
         }
+        return true;
       }
 
-      const queueSuccess = await queuePromise;
-      if (queueSuccess) return true;
-
-      // If queue didn't succeed and fallback is needed
-      return true;
+      // USB cable NOT connected / bridge offline: show receipt preview dialog on screen
+      console.log("⚠️ USB printer not connected / bridge offline: showing print preview dialog...");
+      return await offerPDFFallback(saleData, outletId, t, discountInfo);
     } catch (err) {
       console.warn("[UniversalPrinter] smartPrint error:", err);
-      return false;
+      return await offerPDFFallback(saleData, outletId, t, discountInfo);
     }
   },
 
