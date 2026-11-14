@@ -5,6 +5,7 @@ import {
   Alert,
   Animated,
   FlatList,
+  Image,
   ImageBackground,
   Modal,
   Platform,
@@ -258,11 +259,15 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
       <View style={[styles.header, isSmallScreen && styles.compactHeader]}>
         <View style={styles.logoRow}>
           <View style={styles.logoCircle}>
-            <Text style={styles.logoCircleText}>🍽️</Text>
+            <Image
+              source={require("./assets/images/app_logo.png")}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
           </View>
           <View style={styles.brandTextGroup}>
             <Text style={styles.brandTitle}>
-              Smart <Text style={styles.brandTitleAccent}>Dining</Text>
+              Smart <Text style={styles.brandTitleAccent}>POS</Text>
             </Text>
             <Text style={styles.brandSubtitle}>Delicious Food. Exceptional Experience.</Text>
           </View>
@@ -653,17 +658,25 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   logoCircle: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: "#ff641f",
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#ff641f",
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
     elevation: 5,
+    overflow: "hidden",
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.8)",
+  },
+  logoImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
   },
   logoCircleText: {
     fontSize: 26,

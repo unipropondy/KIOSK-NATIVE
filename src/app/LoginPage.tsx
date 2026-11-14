@@ -448,11 +448,19 @@ export default function LoginPage({ onLoginSuccess }: Props) {
                 },
               ]}
             >
-              <Text style={styles.restaurantLogoEmoji}>🍽️</Text>
+              <Image
+                source={require("./assets/images/app_logo.png")}
+                style={{
+                  width: logoSize - 12,
+                  height: logoSize - 12,
+                  borderRadius: (logoSize - 12) / 2,
+                }}
+                resizeMode="contain"
+              />
             </View>
 
             <Text style={[styles.brand, { fontSize: brandFontSize }]}>
-              SMART <Text style={styles.brandAccent}>DINING</Text>
+              SMART <Text style={styles.brandAccent}>POS</Text>
             </Text>
             <Text style={styles.subtitle}>Restaurant & Cafe Kiosk</Text>
 
@@ -821,7 +829,7 @@ const styles = StyleSheet.create({
     width: 96,
     height: 96,
     borderRadius: 48,
-    backgroundColor: "#ff5722",
+    backgroundColor: "#ffffff",
     position: "absolute",
     top: -52,
     alignSelf: "center",
@@ -829,13 +837,14 @@ const styles = StyleSheet.create({
     transform: [{ translateX: -48 }],
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 8,
+    borderWidth: 5,
     borderColor: "#ffffff",
-    shadowColor: "#ff5722",
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    elevation: 4,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 6,
+    overflow: "hidden",
   },
   restaurantLogoEmoji: {
     fontSize: 42,

@@ -116,11 +116,13 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const [currentOrderId, setCurrentOrderId] = useState<string | null>(null);
   const [enableKioskTable, setEnableKioskTable] = useState<number>(0);
   const [showTableModal, setShowTableModal] = useState(false);
+  const [checkoutStep, setCheckoutStep] = useState<"CHOICE" | "ENTER_TENT">("CHOICE");
   const [availableTables, setAvailableTables] = useState<any[]>([]);
   const [loadingTables, setLoadingTables] = useState(false);
   const [selectedSection, setSelectedSection] = useState<string>("ALL");
   const [inputTableNo, setInputTableNo] = useState<string>("");
   const [tableInputError, setTableInputError] = useState<string | null>(null);
+  const [isUpdatingTent, setIsUpdatingTent] = useState(false);
 
   // Modifiers Modal State
   const [showModifier, setShowModifier] = useState(false);
@@ -826,62 +828,92 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
     } catch (_) {}
 
     if (shouldPromptTable) {
-      // If Enablekiosktable = 1, show table selection modal
+      // If Enablekiosktable = 1, display popup with two options: Self Checkout & Enter Tent Number
+      setCheckoutStep("CHOICE");
       setInputTableNo("");
       setTableInputError(null);
-      fetchAvailableTables();
       setShowTableModal(true);
     } else {
-      // If Enablekiosktable = 0, continue directly with existing checkout process
+      // If Enablekiosktable = 0, skip popup and continue existing checkout flow
       handleProceedToPayment();
     }
   };
 
-  // Submit and validate entered table number
-  const handleSubmitTableNo = async () => {
-    const rawVal = inputTableNo.trim();
-    if (!rawVal) {
-      setTableInputError("Please enter a table number");
-      return;
-    }
-
-    if (loadingTables) {
-      setTableInputError("Loading tables, please wait...");
-      return;
-    }
-
-    // Match table from availableTables
-    const cleanInput = rawVal.toLowerCase();
-    const matchedTable = availableTables.find((tbl: any) => {
-      const tNum = String(tbl.TableNo || tbl.TableNumber || "").trim().toLowerCase();
-      return tNum === cleanInput;
-    });
-
-    if (!matchedTable) {
-      setTableInputError(`Table ${rawVal} is not found or not available`);
-      return;
-    }
-
-    setTableInputError(null);
-    await handleSelectTableAndContinue(matchedTable);
+  // Option 1: Self Checkout – continue checkout without entering a table number
+  // Keeps the initially assigned Table Number from TableMaster unchanged
+  const handleSelfCheckout = () => {
+    setShowTableModal(false);
+    handleProceedToPayment();
   };
 
-  // User selects a table and continues existing checkout process
-  const handleSelectTableAndContinue = async (selectedTbl: any) => {
-    const selectedNo = selectedTbl.TableNo || selectedTbl.TableNumber || "";
-    const selectedId = selectedTbl.TableId || "";
+  // Option 2: Enter Tent Number – switch to tent number input view
+  const handleChooseEnterTentNumber = () => {
+    setCheckoutStep("ENTER_TENT");
+    setInputTableNo("");
+    setTableInputError(null);
+  };
 
-    setTableNo(String(selectedNo).trim());
-    setTableId(String(selectedId).trim());
+  // Submit and validate manually entered tent number
+  const handleSubmitTentNumber = async () => {
+    const rawVal = inputTableNo.trim();
+    if (!rawVal) {
+      setTableInputError("Please enter your tent number");
+      return;
+    }
+
+    // Validate alphanumeric/tent format (e.g. 10, 21, T-12)
+    if (!/^[a-zA-Z0-9\-_]+$/.test(rawVal)) {
+      setTableInputError("Please enter a valid tent number (e.g. 21, T-12)");
+      return;
+    }
+
+    setIsUpdatingTent(true);
+    setTableInputError(null);
 
     try {
-      await AsyncStorage.setItem("tableNo", String(selectedNo).trim());
-      await AsyncStorage.setItem("tableId", String(selectedId).trim());
-    } catch (_) {}
+      const activeOrderId = currentOrderId || (await AsyncStorage.getItem("kioskOrderId"));
+      const storedTableId = tableId || (await AsyncStorage.getItem("tableId"));
 
-    setShowTableModal(false);
-    // Continue with existing checkout process with updated table
-    handleProceedToPayment(String(selectedId).trim());
+      // Call backend to validate availability and update TableMaster & RestaurantOrderCur
+      const res = await fetch(`${API}/order/kiosk/update-tent-number`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId: activeOrderId,
+          currentTableId: storedTableId,
+          newTableNo: rawVal,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!data.success) {
+        setTableInputError(data.error || `Table / Tent number ${rawVal} is unavailable or occupied.`);
+        setIsUpdatingTent(false);
+        return;
+      }
+
+      // Successfully updated on backend: update local state & AsyncStorage
+      const updatedTableId = data.tableId || storedTableId;
+      setTableNo(rawVal);
+      if (updatedTableId) {
+        setTableId(updatedTableId);
+      }
+
+      await AsyncStorage.setItem("tableNo", rawVal);
+      if (updatedTableId) {
+        await AsyncStorage.setItem("tableId", updatedTableId);
+      }
+
+      setShowTableModal(false);
+      // Proceed to checkout with the updated TableId & TableNo
+      handleProceedToPayment(updatedTableId);
+    } catch (err: any) {
+      console.error("Tent number update error:", err);
+      setTableInputError(err?.message || "Failed to update tent number. Please try again.");
+    } finally {
+      setIsUpdatingTent(false);
+    }
   };
 
   // Checkout / Place Order Flow
@@ -1518,7 +1550,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
         </View>
       </Modal>
 
-      {/* ── Table Selection Modal (Enablekiosktable = 1) ── */}
+      {/* ── Checkout Table / Tent Modal (Enablekiosktable = 1) ── */}
       <Modal
         visible={showTableModal}
         transparent={true}
@@ -1529,9 +1561,13 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
           <View style={styles.tableModalContainer}>
             <View style={styles.tableModalHeader}>
               <View>
-                <Text style={styles.tableModalTitle}>Select Your Table</Text>
+                <Text style={styles.tableModalTitle}>
+                  {checkoutStep === "CHOICE" ? "Checkout Option" : "Enter Tent Number"}
+                </Text>
                 <Text style={styles.tableModalSubtitle}>
-                  Please choose an available table to proceed with checkout
+                  {checkoutStep === "CHOICE"
+                    ? "Choose how you'd like to proceed with your order"
+                    : "Please type the tent number placed on your table"}
                 </Text>
               </View>
               <TouchableOpacity
@@ -1543,62 +1579,127 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
               </TouchableOpacity>
             </View>
 
-            {/* ── Input Field & Instructions Body (as in reference design) ── */}
-            <View style={styles.tableDirectInputBody}>
-              <View style={[styles.tableDirectInputBox, !!tableInputError && styles.tableDirectInputBoxError]}>
-                <Ionicons name="search-outline" size={24} color="#64748b" style={styles.tableDirectSearchIcon} />
-                <TextInput
-                  style={styles.tableDirectTextInput}
-                  value={inputTableNo}
-                  onChangeText={(text) => {
-                    setInputTableNo(text);
-                    if (tableInputError) setTableInputError(null);
-                  }}
-                  onSubmitEditing={handleSubmitTableNo}
-                  returnKeyType="done"
-                  keyboardType="numeric"
-                  editable={!loadingTables}
-                  autoFocus={true}
-                  selectTextOnFocus={false}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                {inputTableNo.length > 0 && (
-                  <TouchableOpacity
-                    onPress={() => {
-                      setInputTableNo("");
+            {checkoutStep === "CHOICE" ? (
+              /* ── Step 1: Two Options (Self Checkout & Enter Tent Number) ── */
+              <View style={styles.checkoutChoiceContainer}>
+                <TouchableOpacity
+                  style={styles.checkoutChoiceCard}
+                  onPress={handleSelfCheckout}
+                  activeOpacity={0.85}
+                >
+                  <View style={[styles.checkoutChoiceIconWrap, { backgroundColor: "#fff7ed" }]}>
+                    <Ionicons name="card-outline" size={32} color="#ea580c" />
+                  </View>
+                  <View style={styles.checkoutChoiceTextWrap}>
+                    <Text style={styles.checkoutChoiceTitle}>Self Checkout</Text>
+                    <Text style={styles.checkoutChoiceDescription}>
+                      Continue straight to payment without entering a table or tent number.
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={24} color="#94a3b8" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.checkoutChoiceCard, styles.checkoutChoiceCardHighlight]}
+                  onPress={handleChooseEnterTentNumber}
+                  activeOpacity={0.85}
+                >
+                  <View style={[styles.checkoutChoiceIconWrap, { backgroundColor: "#f0fdf4" }]}>
+                    <Ionicons name="restaurant-outline" size={32} color="#16a34a" />
+                  </View>
+                  <View style={styles.checkoutChoiceTextWrap}>
+                    <Text style={styles.checkoutChoiceTitle}>Enter Tent Number</Text>
+                    <Text style={styles.checkoutChoiceDescription}>
+                      Manually enter your table / tent stand number so staff can deliver your food.
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={24} color="#94a3b8" />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              /* ── Step 2: Manual Text Input for Tent Number (No dropdown/table list) ── */
+              <View style={styles.tableDirectInputBody}>
+                <Text style={styles.tentInputLabel}>Tent / Stand Number</Text>
+                <View style={[styles.tableDirectInputBox, !!tableInputError && styles.tableDirectInputBoxError]}>
+                  <Ionicons name="bookmark-outline" size={24} color="#ea580c" style={styles.tableDirectSearchIcon} />
+                  <TextInput
+                    style={styles.tableDirectTextInput}
+                    placeholder="e.g. 15 or T-12"
+                    placeholderTextColor="#94a3b8"
+                    value={inputTableNo}
+                    onChangeText={(text) => {
+                      setInputTableNo(text);
                       if (tableInputError) setTableInputError(null);
                     }}
-                    hitSlop={10}
-                    activeOpacity={0.7}
-                    style={styles.tableDirectClearBtn}
-                  >
-                    <Ionicons name="close-circle" size={22} color="#94a3b8" />
-                  </TouchableOpacity>
-                )}
-              </View>
+                    onSubmitEditing={handleSubmitTentNumber}
+                    returnKeyType="done"
+                    autoFocus={true}
+                    selectTextOnFocus={false}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                  />
+                  {inputTableNo.length > 0 && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        setInputTableNo("");
+                        if (tableInputError) setTableInputError(null);
+                      }}
+                      hitSlop={10}
+                      activeOpacity={0.7}
+                      style={styles.tableDirectClearBtn}
+                    >
+                      <Ionicons name="close-circle" size={22} color="#94a3b8" />
+                    </TouchableOpacity>
+                  )}
+                </View>
 
-              {tableInputError ? (
-                <View style={styles.tableErrorBadge}>
-                  <Text style={styles.tableErrorBadgeText}>{tableInputError}</Text>
-                </View>
-              ) : (
-                <View style={styles.tableInstructionBadge}>
-                  <Text style={styles.tableInstructionBadgeText}>
-                    Type table number (e.g. 10) and press Enter
+                {tableInputError ? (
+                  <View style={styles.tableErrorBadge}>
+                    <Text style={styles.tableErrorBadgeText}>{tableInputError}</Text>
+                  </View>
+                ) : (
+                  <View style={styles.tableInstructionBadge}>
+                    <Text style={styles.tableInstructionBadgeText}>
+                      Type your tent number and tap "Continue to Payment"
+                    </Text>
+                  </View>
+                )}
+
+                <TouchableOpacity
+                  style={[styles.tentContinueBtn, isUpdatingTent && { opacity: 0.7 }]}
+                  onPress={handleSubmitTentNumber}
+                  activeOpacity={0.88}
+                  disabled={isUpdatingTent}
+                >
+                  <Text style={styles.tentContinueBtnText}>
+                    {isUpdatingTent ? "Checking Availability..." : "Continue to Payment"}
                   </Text>
-                </View>
-              )}
-            </View>
+                  {!isUpdatingTent && <Ionicons name="arrow-forward" size={20} color="#ffffff" />}
+                </TouchableOpacity>
+              </View>
+            )}
 
             <View style={styles.tableModalFooter}>
-              <TouchableOpacity
-                style={styles.tableCancelBtn}
-                onPress={() => setShowTableModal(false)}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.tableCancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
+              {checkoutStep === "ENTER_TENT" ? (
+                <TouchableOpacity
+                  style={styles.tableCancelBtn}
+                  onPress={() => {
+                    setCheckoutStep("CHOICE");
+                    setTableInputError(null);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.tableCancelBtnText}>← Back</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={styles.tableCancelBtn}
+                  onPress={() => setShowTableModal(false)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.tableCancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </View>
@@ -3544,12 +3645,66 @@ const styles = StyleSheet.create({
     color: "#475569",
     fontWeight: "700",
   },
-  /* ── DIRECT TABLE NUMBER INPUT (Reference Design) ── */
+  /* ── TWO-OPTION CHECKOUT CHOICE ── */
+  checkoutChoiceContainer: {
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    gap: 16,
+  },
+  checkoutChoiceCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 20,
+    borderRadius: 18,
+    backgroundColor: "#ffffff",
+    borderWidth: 1.5,
+    borderColor: "#e2e8f0",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  checkoutChoiceCardHighlight: {
+    borderColor: "#fdba74",
+    backgroundColor: "#fffaf5",
+  },
+  checkoutChoiceIconWrap: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 16,
+  },
+  checkoutChoiceTextWrap: {
+    flex: 1,
+  },
+  checkoutChoiceTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0f172a",
+    marginBottom: 4,
+  },
+  checkoutChoiceDescription: {
+    fontSize: 13,
+    color: "#64748b",
+    lineHeight: 18,
+    fontWeight: "500",
+  },
+  /* ── DIRECT TENT NUMBER INPUT ── */
   tableDirectInputBody: {
     paddingHorizontal: 28,
-    paddingTop: 36,
-    paddingBottom: 44,
+    paddingTop: 28,
+    paddingBottom: 36,
     alignItems: "center",
+  },
+  tentInputLabel: {
+    alignSelf: "flex-start",
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#334155",
+    marginBottom: 10,
   },
   tableDirectInputBox: {
     width: "100%",
@@ -3582,36 +3737,57 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   tableInstructionBadge: {
-    marginTop: 32,
-    backgroundColor: "#fef2f2",
-    paddingVertical: 12,
-    paddingHorizontal: 22,
-    borderRadius: 14,
+    marginTop: 20,
+    backgroundColor: "#fff7ed",
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
   tableInstructionBadgeText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#b91c1c",
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#ea580c",
     textAlign: "center",
   },
   tableErrorBadge: {
-    marginTop: 32,
+    marginTop: 20,
     backgroundColor: "#fee2e2",
-    paddingVertical: 12,
-    paddingHorizontal: 22,
-    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
     borderColor: "#fca5a5",
   },
   tableErrorBadgeText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
     color: "#dc2626",
     textAlign: "center",
+  },
+  tentContinueBtn: {
+    marginTop: 24,
+    width: "100%",
+    height: 54,
+    borderRadius: 16,
+    backgroundColor: "#ea580c",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    shadowColor: "#ea580c",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  tentContinueBtnText: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#ffffff",
   },
   tableModalFooter: {
     paddingHorizontal: 28,

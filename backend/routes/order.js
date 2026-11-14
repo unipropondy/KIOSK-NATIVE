@@ -278,6 +278,9 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     if (tCheck.recordset.length > 0) {
       actualTableNo = tCheck.recordset[0].TableNumber;
       finalTableId = tCheck.recordset[0].TableId;
+    } else {
+      // If tableId passed was actually a TableNumber or manual Tent Number (non-GUID string)
+      actualTableNo = cleanTableId;
     }
   }
 
@@ -312,13 +315,18 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
 
   if (headerCheck.recordset.length > 0) {
     orderGuid = headerCheck.recordset[0].OrderId;
-    // Ensure the OrderNumber is synced to the professional one if it was a draft (TEMP-, PENDING, etc)
+    // Ensure the OrderNumber and Tableno are synced
     await transaction.request()
       .input("orderId", sql.UniqueIdentifier, orderGuid)
       .input("orderNo", sql.NVarChar(50), cleanOrderNo)
+      .input("tableNo", sql.VarChar(20), actualTableNo)
       .query(`
         UPDATE RestaurantOrderCur 
-        SET OrderNumber = @orderNo 
+        SET OrderNumber = @orderNo,
+            Tableno = CASE 
+              WHEN @tableNo IS NOT NULL AND @tableNo <> '' AND @tableNo <> 'DINE_IN' AND @tableNo <> 'TAKEAWAY' THEN LTRIM(RTRIM(@tableNo))
+              ELSE Tableno
+            END
         WHERE OrderId = @orderId 
         AND (OrderNumber IS NULL OR OrderNumber = '' OR OrderNumber = 'PENDING' OR OrderNumber = 'NEW' OR OrderNumber = '#NEW' OR OrderNumber LIKE 'TEMP-%')
       `);
@@ -825,6 +833,169 @@ router.post("/kiosk/start", async (req, res) => {
   } catch (err) {
     console.error("[Kiosk] /kiosk/start ERROR:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── UPDATE TENT / TABLE NUMBER FOR ACTIVE KIOSK ORDER ─────────────────────
+router.post("/kiosk/update-tent-number", async (req, res) => {
+  const pool = await poolPromise;
+  const transaction = new sql.Transaction(pool);
+
+  try {
+    const { orderId, currentTableId, newTableNo } = req.body;
+
+    const cleanNewTable = String(newTableNo || "").trim();
+    const cleanOrderId = String(orderId || "").trim();
+    const cleanCurrentTableId = currentTableId ? String(currentTableId).replace(/^\{|\}$/g, "").trim() : null;
+
+    if (!cleanNewTable) {
+      return res.status(400).json({ success: false, error: "Please enter a valid tent number." });
+    }
+
+    await transaction.begin();
+
+    // 1. Check if Table Number already exists in TableMaster
+    const existingTableRes = await transaction.request()
+      .input("newTable", sql.VarChar(50), cleanNewTable)
+      .query(`
+        SELECT TOP 1 TableId, TableNumber, ISNULL(Status, 0) AS Status, CurrentOrderId
+        FROM TableMaster
+        WHERE LTRIM(RTRIM(TableNumber)) = LTRIM(RTRIM(@newTable))
+      `);
+
+    let targetTableId = null;
+
+    if (existingTableRes.recordset.length > 0) {
+      const existingRecord = existingTableRes.recordset[0];
+      targetTableId = existingRecord.TableId;
+
+      // Check if occupied by another active order
+      const isSameOrder = cleanOrderId && existingRecord.CurrentOrderId === cleanOrderId;
+      const isOccupiedInTableMaster = (existingRecord.Status !== 0 && existingRecord.CurrentOrderId && !isSameOrder);
+
+      // Check if occupied in RestaurantOrderCur
+      const activeOrderCheck = await transaction.request()
+        .input("newTable", sql.VarChar(50), cleanNewTable)
+        .input("cleanOrderId", sql.NVarChar(50), cleanOrderId || "")
+        .query(`
+          SELECT TOP 1 OrderId, OrderNumber
+          FROM RestaurantOrderCur
+          WHERE LTRIM(RTRIM(Tableno)) = LTRIM(RTRIM(@newTable))
+            AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+            AND StatusCode NOT IN (0, 3, 4)
+            AND (@cleanOrderId = '' OR OrderNumber <> @cleanOrderId)
+        `);
+
+      if (isOccupiedInTableMaster || activeOrderCheck.recordset.length > 0) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          error: `Table / Tent number ${cleanNewTable} is currently occupied by another active order.`
+        });
+      }
+
+      // If switching from a previous table record that is different, free up the old table record
+      if (cleanCurrentTableId && String(cleanCurrentTableId).toLowerCase() !== String(targetTableId).toLowerCase()) {
+        await transaction.request()
+          .input("oldTid", sql.UniqueIdentifier, cleanCurrentTableId)
+          .query(`
+            UPDATE TableMaster
+            SET Status = 0,
+                CurrentOrderId = NULL,
+                TotalAmount = 0,
+                StartTime = NULL,
+                ModifiedOn = GETDATE()
+            WHERE TableId = @oldTid
+          `);
+      }
+
+      // Update the matched existing TableMaster record with current active order
+      await transaction.request()
+        .input("targetTid", sql.UniqueIdentifier, targetTableId)
+        .input("oid", sql.NVarChar(50), cleanOrderId || null)
+        .query(`
+          UPDATE TableMaster
+          SET Status = 1,
+              CurrentOrderId = @oid,
+              entry_status = 'q',
+              StartTime = ISNULL(StartTime, GETDATE()),
+              ModifiedOn = GETDATE()
+          WHERE TableId = @targetTid
+        `);
+
+    } else {
+      // If Table Number does not exist as a separate record in TableMaster:
+      // Update the current TableMaster record's TableNumber from old number to new number (preserving correct TableId)
+      if (cleanCurrentTableId) {
+        targetTableId = cleanCurrentTableId;
+        await transaction.request()
+          .input("targetTid", sql.UniqueIdentifier, cleanCurrentTableId)
+          .input("newTable", sql.VarChar(50), cleanNewTable)
+          .input("oid", sql.NVarChar(50), cleanOrderId || null)
+          .query(`
+            UPDATE TableMaster
+            SET TableNumber = @newTable,
+                Status = 1,
+                CurrentOrderId = @oid,
+                entry_status = 'q',
+                StartTime = ISNULL(StartTime, GETDATE()),
+                ModifiedOn = GETDATE()
+            WHERE TableId = @targetTid
+          `);
+      } else {
+        // Fallback: Check if there's an active table for this order in TableMaster
+        const orderTableRes = await transaction.request()
+          .input("oid", sql.NVarChar(50), cleanOrderId)
+          .query(`
+            SELECT TOP 1 TableId FROM TableMaster WHERE CurrentOrderId = @oid
+          `);
+
+        if (orderTableRes.recordset.length > 0) {
+          targetTableId = orderTableRes.recordset[0].TableId;
+          await transaction.request()
+            .input("targetTid", sql.UniqueIdentifier, targetTableId)
+            .input("newTable", sql.VarChar(50), cleanNewTable)
+            .query(`
+              UPDATE TableMaster
+              SET TableNumber = @newTable,
+                  Status = 1,
+                  entry_status = 'q',
+                  StartTime = ISNULL(StartTime, GETDATE()),
+                  ModifiedOn = GETDATE()
+              WHERE TableId = @targetTid
+            `);
+        }
+      }
+    }
+
+    // 2. Update RestaurantOrderCur.Tableno with newTableNo
+    if (cleanOrderId) {
+      await transaction.request()
+        .input("newTable", sql.VarChar(20), cleanNewTable)
+        .input("oid", sql.NVarChar(50), cleanOrderId)
+        .query(`
+          UPDATE RestaurantOrderCur
+          SET Tableno = LTRIM(RTRIM(@newTable)),
+              ModifiedOn = GETDATE()
+          WHERE OrderNumber = @oid
+        `);
+    }
+
+    await transaction.commit();
+
+    return res.json({
+      success: true,
+      tableNo: cleanNewTable,
+      tableId: targetTableId || cleanCurrentTableId || null,
+      message: `Table number successfully updated to ${cleanNewTable}`
+    });
+
+  } catch (err) {
+    if (transaction._isStarted) {
+      try { await transaction.rollback(); } catch (_) {}
+    }
+    console.error("[Kiosk] /kiosk/update-tent-number ERROR:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1992,6 +2163,18 @@ router.post("/complete-online-payment", async (req, res) => {
     } else {
       guidOrderId = header.OrderId;
       businessUnitId = header.BusinessUnitId || DEFAULT_GUID;
+
+      // Update table number on existing RestaurantOrderCur if a tent number / table was supplied
+      if (tableNo && tableNo !== "DINE_IN" && tableNo !== "TAKEAWAY") {
+        await transaction.request()
+          .input("orderId", sql.UniqueIdentifier, guidOrderId)
+          .input("tableNo", sql.VarChar(20), String(tableNo).trim())
+          .query(`
+            UPDATE RestaurantOrderCur
+            SET Tableno = LTRIM(RTRIM(@tableNo))
+            WHERE OrderId = @orderId
+          `);
+      }
     }
 
     console.log(`🔍 [PAYMENT] Using OrderId: ${guidOrderId}`);

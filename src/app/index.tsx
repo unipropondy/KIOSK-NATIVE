@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Image, StyleSheet, Text, View } from "react-native";
 import KioskStartPage from "./KioskStartPage";
 import LoginPage from "./LoginPage";
 import OrderingScreen from "./OrderingScreen";
@@ -39,10 +39,14 @@ export default function Index() {
       <View style={styles.loadingContainer}>
         <View style={styles.loadingCard}>
           <View style={styles.logoBadge}>
-            <Text style={styles.restaurantIcon}>🍽️</Text>
+            <Image
+              source={require("./assets/images/app_logo.png")}
+              style={{ width: 44, height: 44, borderRadius: 22 }}
+              resizeMode="contain"
+            />
           </View>
           <Text style={styles.brandTitle}>
-            SMART <Text style={styles.brandAccent}>DINING</Text>
+            SMART <Text style={styles.brandAccent}>POS</Text>
           </Text>
           <Text style={styles.brandSubtitle}>Restaurant & Cafe Kiosk</Text>
           <ActivityIndicator size="large" color="#ff5722" style={styles.spinner} />
@@ -76,8 +80,20 @@ export default function Index() {
           setCompletedOrderMeta(metadata || null);
           setCurrentPage("settlement_success");
         }}
-        onLogout={() => {
-          setCurrentPage("login");
+        onLogout={async () => {
+          try {
+            await AsyncStorage.multiRemove([
+              "kioskOrderId",
+              "tableId",
+              "tableNo",
+              "kioskCarNumber",
+              "kioskCustomerName",
+              "kioskCustomerVehicleId",
+              "kioskDefaultDishId",
+              "kioskOrderType",
+            ]);
+          } catch (_) {}
+          setCurrentPage("start");
         }}
       />
     );
