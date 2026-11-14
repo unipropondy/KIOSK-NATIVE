@@ -1380,21 +1380,21 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                         {item.Name}
                       </Text>
 
-                      {/* Bullet Points Description with Orange Check Mark badge (if item has actual description) */}
-                      {!!item.Description && parseDescriptionBullets(item.Description).length > 0 && (
-                        <View style={styles.dishBulletsContainer}>
-                          {parseDescriptionBullets(item.Description).map((bullet, idx) => (
-                            <View key={idx} style={styles.dishBulletRow}>
-                              <View style={styles.checkBadge}>
-                                <Text style={styles.checkBadgeIcon}>✓</Text>
-                              </View>
-                              <Text style={styles.dishBulletText}>
-                                {bullet}
-                              </Text>
+                      {/* Bullet Points Description with Orange Check Mark badge */}
+                      <View style={styles.dishBulletsContainer}>
+                        {parseDescriptionBullets(
+                          item.Description || "Freshly prepared • Delicious • High Quality"
+                        ).map((bullet, idx) => (
+                          <View key={idx} style={styles.dishBulletRow}>
+                            <View style={styles.checkBadge}>
+                              <Text style={styles.checkBadgeIcon}>✓</Text>
                             </View>
-                          ))}
-                        </View>
-                      )}
+                            <Text style={styles.dishBulletText}>
+                              {bullet}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
                     </View>
 
                     <Text style={styles.dishPrice}>${Number(item.Price || 0).toFixed(2)}</Text>
