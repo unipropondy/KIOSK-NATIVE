@@ -39,17 +39,12 @@ export default function Index() {
       <View style={styles.loadingContainer}>
         <View style={styles.loadingCard}>
           <View style={styles.logoBadge}>
-            <View style={styles.carIcon}>
-              <View style={styles.carRoof} />
-              <View style={styles.carBody} />
-              <View style={[styles.carWheel, styles.leftCarWheel]} />
-              <View style={[styles.carWheel, styles.rightCarWheel]} />
-            </View>
+            <Text style={styles.restaurantIcon}>🍽️</Text>
           </View>
           <Text style={styles.brandTitle}>
-            RED BAY CAR <Text style={styles.brandAccent}>Wash</Text>
+            SMART <Text style={styles.brandAccent}>DINING</Text>
           </Text>
-          <Text style={styles.brandSubtitle}>Unipro</Text>
+          <Text style={styles.brandSubtitle}>Restaurant & Cafe Kiosk</Text>
           <ActivityIndicator size="large" color="#ff5722" style={styles.spinner} />
           <Text style={styles.loadingText}>Starting system...</Text>
         </View>
@@ -148,42 +143,9 @@ const styles = StyleSheet.create({
     elevation: 4,
     marginBottom: 16,
   },
-  carIcon: {
-    width: 36,
-    height: 26,
-    justifyContent: "flex-end",
-    alignItems: "center",
+  restaurantIcon: {
+    fontSize: 34,
   },
-  carRoof: {
-    position: "absolute",
-    top: 2,
-    width: 19,
-    height: 10,
-    borderColor: "#ffffff",
-    borderWidth: 2,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: 7,
-    borderTopRightRadius: 7,
-  },
-  carBody: {
-    width: 32,
-    height: 12,
-    borderColor: "#ffffff",
-    borderWidth: 2,
-    borderRadius: 5,
-  },
-  carWheel: {
-    position: "absolute",
-    bottom: 0,
-    width: 7,
-    height: 7,
-    borderColor: "#ffffff",
-    borderWidth: 2,
-    borderRadius: 3.5,
-    backgroundColor: "#ff5722",
-  },
-  leftCarWheel: { left: 4 },
-  rightCarWheel: { right: 4 },
   brandTitle: {
     fontSize: 24,
     fontWeight: "900",

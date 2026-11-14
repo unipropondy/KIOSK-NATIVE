@@ -61,7 +61,7 @@ export class BillPDFGenerator {
         };
 
         const result = {
-          name: settings.CompanyName || "Red Bay Car Wash & Cafe",
+          name: settings.CompanyName || "Smart Dining Cafe & Restaurant",
           address: settings.Address || "",
           gstNo: settings.GSTNo || "",
           gstPercentage: gstPercentage,
@@ -95,7 +95,7 @@ export class BillPDFGenerator {
 
   static getDefaultSettings() {
     return {
-      name: "Red Bay Car Wash & Cafe",
+      name: "Smart Dining Cafe & Restaurant",
       address: "",
       gstNo: "",
       gstPercentage: 9,

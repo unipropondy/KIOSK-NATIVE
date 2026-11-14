@@ -49,6 +49,150 @@ function resolveItemTakeaway(item = {}) {
  * Returns existing ID if table is active, otherwise generates a new one.
  */
 let cachedBusinessUnitId = null;
+let cachedDetailColumns = null;
+
+/**
+ * Finds an unoccupied table number and TableId from TableMaster based on order type/dining section.
+ * - DINE_IN: DiningSection IN (1, 2, 3)
+ * - TAKEAWAY: DiningSection = 4
+ */
+async function findAvailableTable(poolOrTx, isTakeaway = false) {
+  const sectionCondition = isTakeaway
+    ? "tm.DiningSection = '4'"
+    : "tm.DiningSection IN ('1', '2', '3')";
+
+  // 1. Primary: Unoccupied table in TableMaster with no open active order in RestaurantOrderCur
+  let res = await poolOrTx.request().query(`
+    SELECT TOP 1 
+      tm.TableId, 
+      tm.TableNumber AS TableNo,
+      tm.DiningSection
+    FROM TableMaster tm
+    WHERE ${sectionCondition}
+      AND ISNULL(tm.Status, 0) = 0
+      AND tm.CurrentOrderId IS NULL
+      AND NOT EXISTS (
+        SELECT 1 
+        FROM RestaurantOrderCur ro 
+        WHERE LTRIM(RTRIM(ro.Tableno)) = LTRIM(RTRIM(tm.TableNumber))
+          AND (ro.isOrderClosed = 0 OR ro.isOrderClosed IS NULL)
+          AND ro.StatusCode NOT IN (0, 3, 4)
+      )
+    ORDER BY 
+      CASE 
+        WHEN tm.DiningSection = '1' THEN 1
+        WHEN tm.DiningSection = '2' THEN 2
+        WHEN tm.DiningSection = '3' THEN 3
+        WHEN tm.DiningSection = '4' THEN 4
+        ELSE 5
+      END ASC,
+      tm.SortCode ASC,
+      CASE 
+        WHEN ISNUMERIC(tm.TableNumber) = 1 THEN CAST(tm.TableNumber AS INT)
+        ELSE 99999
+      END ASC,
+      tm.TableNumber ASC
+  `);
+
+  if (res.recordset && res.recordset.length > 0) {
+    return {
+      tableId: res.recordset[0].TableId,
+      tableNo: res.recordset[0].TableNo,
+      section: res.recordset[0].DiningSection
+    };
+  }
+
+  // 2. Secondary: If all TableMaster Status flags are marked or out-of-sync, check solely by non-active order in RestaurantOrderCur
+  res = await poolOrTx.request().query(`
+    SELECT TOP 1 
+      tm.TableId, 
+      tm.TableNumber AS TableNo,
+      tm.DiningSection
+    FROM TableMaster tm
+    WHERE ${sectionCondition}
+      AND NOT EXISTS (
+        SELECT 1 
+        FROM RestaurantOrderCur ro 
+        WHERE LTRIM(RTRIM(ro.Tableno)) = LTRIM(RTRIM(tm.TableNumber))
+          AND (ro.isOrderClosed = 0 OR ro.isOrderClosed IS NULL)
+          AND ro.StatusCode NOT IN (0, 3, 4)
+      )
+    ORDER BY 
+      CASE 
+        WHEN tm.DiningSection = '1' THEN 1
+        WHEN tm.DiningSection = '2' THEN 2
+        WHEN tm.DiningSection = '3' THEN 3
+        WHEN tm.DiningSection = '4' THEN 4
+        ELSE 5
+      END ASC,
+      tm.SortCode ASC,
+      CASE 
+        WHEN ISNUMERIC(tm.TableNumber) = 1 THEN CAST(tm.TableNumber AS INT)
+        ELSE 99999
+      END ASC,
+      tm.TableNumber ASC
+  `);
+
+  if (res.recordset && res.recordset.length > 0) {
+    return {
+      tableId: res.recordset[0].TableId,
+      tableNo: res.recordset[0].TableNo,
+      section: res.recordset[0].DiningSection
+    };
+  }
+
+  // 3. Fallback: Select the oldest active or lowest sequence table directly from TableMaster (NEVER return DINE_IN or TAKEAWAY)
+  res = await poolOrTx.request().query(`
+    SELECT TOP 1 
+      tm.TableId, 
+      tm.TableNumber AS TableNo,
+      tm.DiningSection
+    FROM TableMaster tm
+    WHERE ${sectionCondition}
+    ORDER BY 
+      CASE 
+        WHEN tm.DiningSection = '1' THEN 1
+        WHEN tm.DiningSection = '2' THEN 2
+        WHEN tm.DiningSection = '3' THEN 3
+        WHEN tm.DiningSection = '4' THEN 4
+        ELSE 5
+      END ASC,
+      tm.SortCode ASC,
+      CASE 
+        WHEN ISNUMERIC(tm.TableNumber) = 1 THEN CAST(tm.TableNumber AS INT)
+        ELSE 99999
+      END ASC,
+      tm.TableNumber ASC
+  `);
+
+  if (res.recordset && res.recordset.length > 0) {
+    return {
+      tableId: res.recordset[0].TableId,
+      tableNo: res.recordset[0].TableNo,
+      section: res.recordset[0].DiningSection
+    };
+  }
+
+  return null;
+}
+
+async function getOrderDetailColumns(poolOrTx) {
+  if (cachedDetailColumns) return cachedDetailColumns;
+  try {
+    const res = await poolOrTx.request().query(`
+      SELECT COLUMN_NAME 
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_NAME = 'RestaurantOrderDetailCur'
+    `);
+    if (res.recordset && res.recordset.length > 0) {
+      cachedDetailColumns = new Set(res.recordset.map(r => r.COLUMN_NAME.toLowerCase()));
+      return cachedDetailColumns;
+    }
+  } catch (err) {
+    console.warn("⚠️ [DB] Failed to query INFORMATION_SCHEMA for RestaurantOrderDetailCur columns:", err.message);
+  }
+  return null;
+}
 
 async function getOrGenerateOrderId(req, tableId) {
   const pool = await poolPromise;
@@ -124,12 +268,26 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
   const cleanTableId = isTakeaway ? null : String(tableId).replace(/^\{|\}$/g, "").trim();
   const cleanOrderNo = String(displayOrderId || "PENDING").replace(/^\{|\}$/g, "").trim();
 
-  let actualTableNo = "TAKEAWAY";
+  let actualTableNo = null;
+  let finalTableId = cleanTableId;
+
   if (cleanTableId) {
     const tCheck = await transaction.request()
       .input("tid", sql.VarChar(50), cleanTableId)
-      .query("SELECT TableNumber FROM TableMaster WHERE TableId = @tid");
-    if (tCheck.recordset.length > 0) actualTableNo = tCheck.recordset[0].TableNumber;
+      .query("SELECT TableNumber, TableId FROM TableMaster WHERE TableId = @tid");
+    if (tCheck.recordset.length > 0) {
+      actualTableNo = tCheck.recordset[0].TableNumber;
+      finalTableId = tCheck.recordset[0].TableId;
+    }
+  }
+
+  // If table is missing or was default "TAKEAWAY" or "DINE_IN", find an available empty table number from TableMaster
+  if (!actualTableNo || actualTableNo === "TAKEAWAY" || actualTableNo === "DINE_IN") {
+    const foundTable = await findAvailableTable(transaction, isTakeaway);
+    if (foundTable) {
+      actualTableNo = foundTable.tableNo;
+      finalTableId = foundTable.tableId;
+    }
   }
 
   let bizId = DEFAULT_GUID;
@@ -174,13 +332,27 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
       .input("bizId", sql.UniqueIdentifier, bizId)
       .input("entry_Status", sql.NVarChar(20), "q")
       .query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId,entry_Status, start_date) VALUES (@orderId, @orderNo, GETDATE(), LTRIM(RTRIM(@tableNo)), 1, @userId, GETDATE(), 0, @bizId, 'q', (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC))");
+
+    // Also update TableMaster with the active OrderNumber and occupied Status if finalTableId is valid
+    if (finalTableId) {
+      await transaction.request()
+        .input("tid", sql.UniqueIdentifier, finalTableId)
+        .input("oid", sql.NVarChar(50), cleanOrderNo)
+        .query(`
+          UPDATE TableMaster 
+          SET Status = 1, 
+              CurrentOrderId = @oid,
+              entry_status = 'q',
+              StartTime = ISNULL(StartTime, GETDATE()),
+              ModifiedOn = GETDATE()
+          WHERE TableId = @tid
+        `);
+    }
   }
 
   for (const item of items) {
     const rawProdId = item.DishId || item.dishId || item.id || item.ProductId || DEFAULT_GUID;
-    const cleanProdId = String(rawProdId).replace(/^\{|\}$/g, "").trim();
-    let finalProdId = cleanProdId;
-    if (finalProdId.length < 10) finalProdId = DEFAULT_GUID;
+    const finalProdId = toGuidOrNull(rawProdId) || DEFAULT_GUID;
 
     let lineItemId = item.lineItemId || item.ItemId;
     const statusCodes = { 'NEW': 1, 'SENT': 2, 'READY': 3, 'SERVED': 4, 'HOLD': 5, 'VOIDED': 0 };
@@ -230,8 +402,8 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     // }
 
 
-    if (!lineItemId || lineItemId.length < 10) {
-
+    lineItemId = toGuidOrNull(lineItemId);
+    if (!lineItemId) {
       const matchCheck = await transaction.request()
         .input("orderId", sql.UniqueIdentifier, orderGuid)
         .input("dishId", sql.UniqueIdentifier, finalProdId)
@@ -262,6 +434,10 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     console.log("COMBO:", comboDetailsJSON);
     console.log("QTY:", item.qty);
 
+    const availableCols = await getOrderDetailColumns(transaction);
+
+    const hasCol = (col) => !availableCols || availableCols.has(col.toLowerCase());
+
     const detailCheck = await transaction.request().input("detailId", sql.UniqueIdentifier, lineItemId).query("SELECT OrderDetailId,StatusCode FROM RestaurantOrderDetailCur WHERE OrderDetailId = @detailId");
     if (detailCheck.recordset.length > 0) {
       if (
@@ -269,7 +445,7 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
         detailCheck.recordset[0].StatusCode !== 3 &&
         detailCheck.recordset[0].StatusCode !== 2
       ) {
-        await transaction.request()
+        const updateReq = transaction.request()
           .input("detailId", sql.UniqueIdentifier, lineItemId)
           .input("qty", sql.Int, item.qty || 1)
           .input("cost", sql.Decimal(18, 2), unitPrice)
@@ -292,11 +468,29 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
             sql.NVarChar(100),
             String(noteInfo.value || "").substring(0, 100)
           )
-          .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0)
-          .query("UPDATE RestaurantOrderDetailCur SET Quantity = @qty, PricePerUnit = @cost, ActualAmount = @cost * @qty, TotalDetailLineAmount = @cost * @qty, StatusCode = 1, Description = @dishName, DishName = @dishName, ModifiedBy = @userId, ModifiedOn = GETDATE(), ModifiersJSON = @mods, ComboDetailsJSON = @comboDetailsJSON, OrderNumber = @orderNo, Remarks = @note, isTakeAway = @isTakeaway WHERE OrderDetailId = @detailId AND StatusCode <> 4 and StatusCode <> 3 and StatusCode <> 2");
+          .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0);
+
+        let updateClauses = [
+          "Quantity = @qty",
+          "PricePerUnit = @cost",
+          "ActualAmount = @cost * @qty",
+          "TotalDetailLineAmount = @cost * @qty",
+          "StatusCode = 1",
+          "Description = @dishName",
+          "DishName = @dishName",
+          "OrderNumber = @orderNo"
+        ];
+        if (hasCol("ModifiedBy")) updateClauses.push("ModifiedBy = @userId");
+        if (hasCol("ModifiedOn")) updateClauses.push("ModifiedOn = GETDATE()");
+        if (hasCol("ModifiersJSON")) updateClauses.push("ModifiersJSON = @mods");
+        if (hasCol("ComboDetailsJSON")) updateClauses.push("ComboDetailsJSON = @comboDetailsJSON");
+        if (hasCol("Remarks")) updateClauses.push("Remarks = @note");
+        if (hasCol("isTakeAway")) updateClauses.push("isTakeAway = @isTakeaway");
+
+        await updateReq.query(`UPDATE RestaurantOrderDetailCur SET ${updateClauses.join(", ")} WHERE OrderDetailId = @detailId AND StatusCode <> 4 and StatusCode <> 3 and StatusCode <> 2`);
       }
     } else {
-      await transaction.request()
+      const insertReq = transaction.request()
         .input("detailId", sql.UniqueIdentifier, lineItemId)
         .input("orderId", sql.UniqueIdentifier, orderGuid)
         .input("dishId", sql.UniqueIdentifier, finalProdId)
@@ -322,66 +516,64 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
           sql.NVarChar(100),
           String(noteInfo.value || "").substring(0, 100)
         )
-        .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0)
-        .input("isProcesse", sql.Bit, 0)
-        .input("isReady", sql.Bit, 0)
-        .input("isDelivered", sql.Bit, 0)
-        .query(`
-  INSERT INTO RestaurantOrderDetailCur
-  (
-    OrderDetailId,
-    OrderId,
-    DishId,
-    Description,
-    DishName,
-    Quantity,
-    PricePerUnit,
-    ActualAmount,
-    TotalDetailLineAmount,
-    StatusCode,
-    CreatedBy,
-    CreatedOn,
-    ModifiersJSON,
-    OrderNumber,
-    Remarks,
-    isTakeAway,
-    BusinessUnitId,
-    OrderDateTime,
-    isProcesse,
-    isReady,
-    isDelivered,
-    ComboDetailsJSON,
-    start_date
-  )
-  VALUES
-  (
-    @detailId,
-    @orderId,
-    @dishId,
-    @dishName,
-    @dishName,
-    @qty,
-    @cost,
-    @cost * @qty,
-    @cost * @qty,
-    1, -- Always start as 1 (NEW) so KOT printing works reliably
-    @userId,
-    GETDATE(),
-    @mods,
-    @orderNo,
-    @note,
-    @isTakeaway,
-    @bizId,
-    GETDATE(),
-    0,
-    0,
-    0,
-    @comboDetailsJSON,
-       (SELECT TOP 1 StartDate
-     FROM DateEntry
-     ORDER BY CreatedDate DESC)
-  )
-`);
+        .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0);
+
+      const insertCols = [
+        "OrderDetailId", "OrderId", "DishId", "Description", "DishName",
+        "Quantity", "PricePerUnit", "ActualAmount", "TotalDetailLineAmount",
+        "StatusCode", "CreatedBy", "CreatedOn", "OrderNumber"
+      ];
+      const insertVals = [
+        "@detailId", "@orderId", "@dishId", "@dishName", "@dishName",
+        "@qty", "@cost", "@cost * @qty", "@cost * @qty",
+        "1", "@userId", "GETDATE()", "@orderNo"
+      ];
+
+      if (hasCol("BusinessUnitId")) {
+        insertCols.push("BusinessUnitId");
+        insertVals.push("@bizId");
+      }
+      if (hasCol("OrderDateTime")) {
+        insertCols.push("OrderDateTime");
+        insertVals.push("GETDATE()");
+      }
+      if (hasCol("ModifiersJSON")) {
+        insertCols.push("ModifiersJSON");
+        insertVals.push("@mods");
+      }
+      if (hasCol("ComboDetailsJSON")) {
+        insertCols.push("ComboDetailsJSON");
+        insertVals.push("@comboDetailsJSON");
+      }
+      if (hasCol("Remarks")) {
+        insertCols.push("Remarks");
+        insertVals.push("@note");
+      }
+      if (hasCol("isTakeAway")) {
+        insertCols.push("isTakeAway");
+        insertVals.push("@isTakeaway");
+      }
+      if (hasCol("isProcesse")) {
+        insertCols.push("isProcesse");
+        insertVals.push("0");
+      }
+      if (hasCol("isReady")) {
+        insertCols.push("isReady");
+        insertVals.push("0");
+      }
+      if (hasCol("isDelivered")) {
+        insertCols.push("isDelivered");
+        insertVals.push("0");
+      }
+      if (hasCol("start_date")) {
+        insertCols.push("start_date");
+        insertVals.push("(SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)");
+      }
+
+      await insertReq.query(`
+        INSERT INTO RestaurantOrderDetailCur (${insertCols.join(", ")})
+        VALUES (${insertVals.join(", ")})
+      `);
     }
 
     // 🚀 Kitchen Compatibility
@@ -506,7 +698,14 @@ async function syncTableStatus(req, tableId) {
 router.get("/kiosk/tables", async (req, res) => {
   try {
     const pool = await poolPromise;
-    // Find next available empty table in Sections 1, 2, 3 in sequence order
+    const { section, orderType } = req.query;
+
+    const isTakeaway = (orderType && String(orderType).toUpperCase().includes("TAKEAWAY")) || String(section) === "4";
+    const sectionCondition = isTakeaway
+      ? "tm.DiningSection = '4'"
+      : "tm.DiningSection IN ('1', '2', '3')";
+
+    // Find next available empty table
     const result = await pool.request().query(`
       SELECT TOP 1 
         tm.TableId, 
@@ -514,14 +713,14 @@ router.get("/kiosk/tables", async (req, res) => {
         tm.DiningSection,
         tm.SortCode
       FROM TableMaster tm
-      WHERE tm.DiningSection IN ('1', '2', '3')
+      WHERE ${sectionCondition}
         AND ISNULL(tm.Status, 0) = 0
         AND tm.CurrentOrderId IS NULL
         AND NOT EXISTS (
           SELECT 1 
           FROM RestaurantOrderCur ro 
-          WHERE (ro.Tableno = tm.TableNumber OR ro.Tableno = CAST(tm.TableId AS NVARCHAR(50)))
-            AND ro.isOrderClosed = 0
+          WHERE LTRIM(RTRIM(ro.Tableno)) = LTRIM(RTRIM(tm.TableNumber))
+            AND (ro.isOrderClosed = 0 OR ro.isOrderClosed IS NULL)
             AND ro.StatusCode NOT IN (0, 3, 4)
         )
       ORDER BY 
@@ -529,9 +728,14 @@ router.get("/kiosk/tables", async (req, res) => {
           WHEN tm.DiningSection = '1' THEN 1
           WHEN tm.DiningSection = '2' THEN 2
           WHEN tm.DiningSection = '3' THEN 3
-          ELSE 4
+          WHEN tm.DiningSection = '4' THEN 4
+          ELSE 5
         END ASC,
         tm.SortCode ASC,
+        CASE 
+          WHEN ISNUMERIC(tm.TableNumber) = 1 THEN CAST(tm.TableNumber AS INT)
+          ELSE 99999
+        END ASC,
         tm.TableNumber ASC
     `);
 
@@ -546,7 +750,14 @@ router.get("/kiosk/tables", async (req, res) => {
 router.get("/kiosk/available-tables", async (req, res) => {
   try {
     const pool = await poolPromise;
-    // Fetch all tables from DiningSection 1, 2, 3 that do not have an active open order in RestaurantOrderCur
+    const { section, orderType } = req.query;
+
+    const isTakeaway = (orderType && String(orderType).toUpperCase().includes("TAKEAWAY")) || String(section) === "4";
+    const sectionCondition = isTakeaway
+      ? "tm.DiningSection = '4'"
+      : "tm.DiningSection IN ('1', '2', '3')";
+
+    // Fetch available tables from TableMaster that do not have an active open order in RestaurantOrderCur
     const result = await pool.request().query(`
       SELECT 
         tm.TableId, 
@@ -556,12 +767,12 @@ router.get("/kiosk/available-tables", async (req, res) => {
         tm.Seats,
         ISNULL(tm.Status, 0) AS Status
       FROM TableMaster tm
-      WHERE tm.DiningSection IN ('1', '2', '3')
+      WHERE ${sectionCondition}
         AND NOT EXISTS (
           SELECT 1 
           FROM RestaurantOrderCur ro 
-          WHERE (ro.Tableno = tm.TableNumber OR ro.Tableno = CAST(tm.TableId AS NVARCHAR(50)))
-            AND ro.isOrderClosed = 0
+          WHERE LTRIM(RTRIM(ro.Tableno)) = LTRIM(RTRIM(tm.TableNumber))
+            AND (ro.isOrderClosed = 0 OR ro.isOrderClosed IS NULL)
             AND ro.StatusCode NOT IN (0, 3, 4)
         )
       ORDER BY 
@@ -569,7 +780,8 @@ router.get("/kiosk/available-tables", async (req, res) => {
           WHEN tm.DiningSection = '1' THEN 1
           WHEN tm.DiningSection = '2' THEN 2
           WHEN tm.DiningSection = '3' THEN 3
-          ELSE 4
+          WHEN tm.DiningSection = '4' THEN 4
+          ELSE 5
         END ASC,
         CASE 
           WHEN ISNUMERIC(tm.TableNumber) = 1 THEN CAST(tm.TableNumber AS INT)
@@ -590,48 +802,25 @@ router.post("/kiosk/start", async (req, res) => {
     let { tableId, tableNo, orderType } = req.body;
     const pool = await poolPromise;
 
-    // If tableId was not provided, automatically find the next available empty table in Sections 1, 2, 3
-    if (!tableId) {
-      const tableCheck = await pool.request().query(`
-        SELECT TOP 1 
-          tm.TableId, 
-          tm.TableNumber AS TableNo,
-          tm.DiningSection,
-          tm.SortCode
-        FROM TableMaster tm
-        WHERE tm.DiningSection IN ('1', '2', '3')
-          AND ISNULL(tm.Status, 0) = 0
-          AND tm.CurrentOrderId IS NULL
-          AND NOT EXISTS (
-            SELECT 1 
-            FROM RestaurantOrderCur ro 
-            WHERE (ro.Tableno = tm.TableNumber OR ro.Tableno = CAST(tm.TableId AS NVARCHAR(50)))
-              AND ro.isOrderClosed = 0
-              AND ro.StatusCode NOT IN (0, 3, 4)
-          )
-        ORDER BY 
-          CASE 
-            WHEN tm.DiningSection = '1' THEN 1
-            WHEN tm.DiningSection = '2' THEN 2
-            WHEN tm.DiningSection = '3' THEN 3
-            ELSE 4
-          END ASC,
-          tm.SortCode ASC,
-          tm.TableNumber ASC
-      `);
+    const isTakeaway = (orderType && String(orderType).toUpperCase().includes("TAKEAWAY"));
 
-      if (tableCheck.recordset.length > 0) {
-        tableId = tableCheck.recordset[0].TableId;
-        tableNo = tableCheck.recordset[0].TableNo;
+    // If tableId/tableNo is not provided or is generic (DINE_IN/TAKEAWAY), find an actual TableNumber from TableMaster
+    if (!tableId || !tableNo || tableNo === "DINE_IN" || tableNo === "TAKEAWAY") {
+      const found = await findAvailableTable(pool, isTakeaway);
+      if (found) {
+        tableId = found.tableId;
+        tableNo = found.tableNo;
       }
     }
 
-    const orderNumber = await getOrGenerateOrderId(req, tableId || "TAKEAWAY");
+    const finalTableNo = tableNo;
+    const orderNumber = await getOrGenerateOrderId(req, tableId || finalTableNo);
+
     res.json({
       success: true,
       orderNumber,
       tableId: tableId || null,
-      tableNo: tableNo || orderType || "TAKEAWAY"
+      tableNo: finalTableNo
     });
   } catch (err) {
     console.error("[Kiosk] /kiosk/start ERROR:", err.message);
@@ -1184,6 +1373,13 @@ router.post("/checkout", async (req, res) => {
       orderNumber = orderNumber || tableInfo.recordset[0].CurrentOrderId || null;
     }
 
+    if (!tableNumber || tableNumber === "TAKEAWAY" || tableNumber === "DINE_IN") {
+      const foundTable = await findAvailableTable(transaction, false);
+      if (foundTable) {
+        tableNumber = foundTable.tableNo;
+      }
+    }
+
     if (orderNumber) {
       const headerCheck = await transaction.request()
         .input("orderNo", sql.NVarChar(50), orderNumber)
@@ -1196,7 +1392,7 @@ router.post("/checkout", async (req, res) => {
         await transaction.request()
           .input("orderId", sql.UniqueIdentifier, orderGuid)
           .input("orderNo", sql.NVarChar(50), orderNumber)
-          .input("tableNo", sql.VarChar(20), tableNumber || "TAKEAWAY")
+          .input("tableNo", sql.VarChar(20), tableNumber)
           .input("userId", sql.UniqueIdentifier, toGuidOrNull(userId) || DEFAULT_GUID)
           .input("bizId", sql.UniqueIdentifier, DEFAULT_GUID)
           .query(`
@@ -1229,14 +1425,17 @@ router.post("/checkout", async (req, res) => {
         .query("SELECT TOP 1 OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderId = @orderId");
 
       if (detailCheck.recordset.length === 0) {
+        const availableCols = await getOrderDetailColumns(transaction);
+        const hasCol = (col) => !availableCols || availableCols.has(col.toLowerCase());
+
         for (const item of cart) {
           const itemId = crypto.randomUUID();
           const quantity = Number(item.qty || item.Quantity || 1);
           const price = Number(item.price || item.PricePerUnit || item.Price || 0);
           const dishName = String(item.name || item.DishName || item.ProductName || "Dish").substring(0, 200);
-          const dishId = item.id || item.DishId || DEFAULT_GUID;
+          const dishId = toGuidOrNull(item.id || item.DishId) || DEFAULT_GUID;
 
-          await transaction.request()
+          const insertReq = transaction.request()
             .input("detailId", sql.UniqueIdentifier, itemId)
             .input("orderId", sql.UniqueIdentifier, orderGuid)
             .input("dishId", sql.UniqueIdentifier, dishId)
@@ -1249,23 +1448,63 @@ router.post("/checkout", async (req, res) => {
             .input("userId", sql.UniqueIdentifier, toGuidOrNull(userId) || DEFAULT_GUID)
             .input("note", sql.NVarChar(100), String(item.note || item.remarks || "").substring(0, 100))
             .input("mods", sql.NVarChar(sql.MAX), JSON.stringify(item.modifiers || []).substring(0, 4000))
-            .input("combo", sql.NVarChar(sql.MAX), JSON.stringify(item.comboSelections || []).substring(0, 4000))
-            .query(`
-              INSERT INTO RestaurantOrderDetailCur (
-                OrderDetailId, OrderId, DishId, Description, DishName,
-                Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount,
-                StatusCode, CreatedBy, CreatedOn, ModifiersJSON,
-                OrderNumber, Remarks, isTakeAway, BusinessUnitId,
-                OrderDateTime, ComboDetailsJSON, start_date
-              ) VALUES (
-                @detailId, @orderId, @dishId, @dishName, @dishName,
-                @qty, @price, @amount, @amount, 1,
-                @userId, GETDATE(), @mods,
-                @orderNo, @note, 0, @bizId,
-                GETDATE(), @combo,
-                (SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)
-              )
-            `);
+            .input("combo", sql.NVarChar(sql.MAX), JSON.stringify(item.comboSelections || []).substring(0, 4000));
+
+          const insertCols = [
+            "OrderDetailId", "OrderId", "DishId", "Description", "DishName",
+            "Quantity", "PricePerUnit", "ActualAmount", "TotalDetailLineAmount",
+            "StatusCode", "CreatedBy", "CreatedOn", "OrderNumber"
+          ];
+          const insertVals = [
+            "@detailId", "@orderId", "@dishId", "@dishName", "@dishName",
+            "@qty", "@price", "@amount", "@amount", "1", "@userId", "GETDATE()", "@orderNo"
+          ];
+
+          if (hasCol("BusinessUnitId")) {
+            insertCols.push("BusinessUnitId");
+            insertVals.push("@bizId");
+          }
+          if (hasCol("OrderDateTime")) {
+            insertCols.push("OrderDateTime");
+            insertVals.push("GETDATE()");
+          }
+          if (hasCol("ModifiersJSON")) {
+            insertCols.push("ModifiersJSON");
+            insertVals.push("@mods");
+          }
+          if (hasCol("ComboDetailsJSON")) {
+            insertCols.push("ComboDetailsJSON");
+            insertVals.push("@combo");
+          }
+          if (hasCol("Remarks")) {
+            insertCols.push("Remarks");
+            insertVals.push("@note");
+          }
+          if (hasCol("isTakeAway")) {
+            insertCols.push("isTakeAway");
+            insertVals.push("0");
+          }
+          if (hasCol("isProcesse")) {
+            insertCols.push("isProcesse");
+            insertVals.push("0");
+          }
+          if (hasCol("isReady")) {
+            insertCols.push("isReady");
+            insertVals.push("0");
+          }
+          if (hasCol("isDelivered")) {
+            insertCols.push("isDelivered");
+            insertVals.push("0");
+          }
+          if (hasCol("start_date")) {
+            insertCols.push("start_date");
+            insertVals.push("(SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)");
+          }
+
+          await insertReq.query(`
+            INSERT INTO RestaurantOrderDetailCur (${insertCols.join(", ")})
+            VALUES (${insertVals.join(", ")})
+          `);
         }
       }
     }
@@ -1709,14 +1948,27 @@ router.post("/complete-online-payment", async (req, res) => {
         .query("SELECT TOP 1 BusinessUnitId FROM RestaurantOrderCur WHERE BusinessUnitId IS NOT NULL AND BusinessUnitId <> '00000000-0000-0000-0000-000000000000'");
       businessUnitId = bizCheck.recordset[0]?.BusinessUnitId || DEFAULT_GUID;
 
-      // Get TableNumber
-      let tableNumber = tableNo || "TAKEAWAY";
+      // Get TableNumber & TableId
+      const isTakeaway = (req.body.kioskOrderType && String(req.body.kioskOrderType).toUpperCase().includes("TAKEAWAY"))
+        || String(tableNo).toUpperCase().includes("TAKEAWAY");
+      let tableNumber = tableNo;
+      let finalTableId = cleanTableId;
+
       if (cleanTableId) {
         const tableInfo = await transaction.request()
           .input("tid", sql.UniqueIdentifier, cleanTableId)
-          .query("SELECT TableNumber FROM TableMaster WHERE TableId = @tid");
+          .query("SELECT TableNumber, TableId FROM TableMaster WHERE TableId = @tid");
         if (tableInfo.recordset.length > 0) {
           tableNumber = tableInfo.recordset[0].TableNumber;
+          finalTableId = tableInfo.recordset[0].TableId;
+        }
+      }
+
+      if (!tableNumber || tableNumber === "TAKEAWAY" || tableNumber === "DINE_IN") {
+        const foundTable = await findAvailableTable(transaction, isTakeaway);
+        if (foundTable) {
+          tableNumber = foundTable.tableNo;
+          finalTableId = foundTable.tableId;
         }
       }
 
@@ -1780,14 +2032,17 @@ router.post("/complete-online-payment", async (req, res) => {
     if (dbItems.length === 0 && cart && cart.length > 0) {
       console.log(`⚠️ [PAYMENT] No items found in DB, creating ${cart.length} items from cart`);
 
+      const availableCols = await getOrderDetailColumns(transaction);
+      const hasCol = (col) => !availableCols || availableCols.has(col.toLowerCase());
+
       for (const item of cart) {
         const itemId = crypto.randomUUID();
-        const dishId = item.id || item.DishId || DEFAULT_GUID;
+        const dishId = toGuidOrNull(item.id || item.DishId) || DEFAULT_GUID;
         const dishName = item.name || item.Name || "Unknown";
         const qty = Number(item.qty || item.Quantity || 1);
         const price = Number(item.price || item.Price || 0);
 
-        await transaction.request()
+        const insertReq = transaction.request()
           .input("detailId", sql.UniqueIdentifier, itemId)
           .input("orderId", sql.UniqueIdentifier, guidOrderId)
           .input("dishId", sql.UniqueIdentifier, dishId)
@@ -1796,18 +2051,38 @@ router.post("/complete-online-payment", async (req, res) => {
           .input("price", sql.Decimal(18, 2), price)
           .input("bizId", sql.UniqueIdentifier, businessUnitId)
           .input("orderNo", sql.NVarChar(50), orderId)
-          .input("userId", sql.UniqueIdentifier, DEFAULT_GUID)
-          .query(`
-                        INSERT INTO RestaurantOrderDetailCur (
-                            OrderDetailId, OrderId, DishId, DishName, Quantity, PricePerUnit,
-                            ActualAmount, TotalDetailLineAmount, StatusCode, CreatedOn,
-                            BusinessUnitId, OrderNumber, CreatedBy, Description
-                        ) VALUES (
-                            @detailId, @orderId, @dishId, @dishName, @qty, @price,
-                            @price * @qty, @price * @qty, 2, GETDATE(),
-                            @bizId, @orderNo, @userId, @dishName
-                        )
-                    `);
+          .input("userId", sql.UniqueIdentifier, DEFAULT_GUID);
+
+        const insertCols = [
+          "OrderDetailId", "OrderId", "DishId", "DishName", "Quantity", "PricePerUnit",
+          "ActualAmount", "TotalDetailLineAmount", "StatusCode", "CreatedOn", "OrderNumber", "CreatedBy"
+        ];
+        const insertVals = [
+          "@detailId", "@orderId", "@dishId", "@dishName", "@qty", "@price",
+          "@price * @qty", "@price * @qty", "2", "GETDATE()", "@orderNo", "@userId"
+        ];
+
+        if (hasCol("BusinessUnitId")) {
+          insertCols.push("BusinessUnitId");
+          insertVals.push("@bizId");
+        }
+        if (hasCol("Description")) {
+          insertCols.push("Description");
+          insertVals.push("@dishName");
+        }
+        if (hasCol("OrderDateTime")) {
+          insertCols.push("OrderDateTime");
+          insertVals.push("GETDATE()");
+        }
+        if (hasCol("start_date")) {
+          insertCols.push("start_date");
+          insertVals.push("(SELECT TOP 1 StartDate FROM DateEntry ORDER BY CreatedDate DESC)");
+        }
+
+        await insertReq.query(`
+          INSERT INTO RestaurantOrderDetailCur (${insertCols.join(", ")})
+          VALUES (${insertVals.join(", ")})
+        `);
       }
 
       // Re-fetch items

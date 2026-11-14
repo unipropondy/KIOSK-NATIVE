@@ -12,6 +12,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View
@@ -118,6 +119,8 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const [availableTables, setAvailableTables] = useState<any[]>([]);
   const [loadingTables, setLoadingTables] = useState(false);
   const [selectedSection, setSelectedSection] = useState<string>("ALL");
+  const [inputTableNo, setInputTableNo] = useState<string>("");
+  const [tableInputError, setTableInputError] = useState<string | null>(null);
 
   // Modifiers Modal State
   const [showModifier, setShowModifier] = useState(false);
@@ -791,7 +794,10 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
   const fetchAvailableTables = async () => {
     setLoadingTables(true);
     try {
-      const res = await fetch(`${API}/order/kiosk/available-tables`);
+      const storedOrderType = (await AsyncStorage.getItem("kioskOrderType")) || "DINE_IN";
+      const isTakeaway = storedOrderType.toUpperCase().includes("TAKEAWAY");
+      const url = `${API}/order/kiosk/available-tables?orderType=${encodeURIComponent(storedOrderType)}&section=${isTakeaway ? "4" : "1"}`;
+      const res = await fetch(url);
       const data = await res.json();
       if (data && data.success && Array.isArray(data.tables)) {
         setAvailableTables(data.tables);
@@ -821,12 +827,43 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
 
     if (shouldPromptTable) {
       // If Enablekiosktable = 1, show table selection modal
+      setInputTableNo("");
+      setTableInputError(null);
       fetchAvailableTables();
       setShowTableModal(true);
     } else {
       // If Enablekiosktable = 0, continue directly with existing checkout process
       handleProceedToPayment();
     }
+  };
+
+  // Submit and validate entered table number
+  const handleSubmitTableNo = async () => {
+    const rawVal = inputTableNo.trim();
+    if (!rawVal) {
+      setTableInputError("Please enter a table number");
+      return;
+    }
+
+    if (loadingTables) {
+      setTableInputError("Loading tables, please wait...");
+      return;
+    }
+
+    // Match table from availableTables
+    const cleanInput = rawVal.toLowerCase();
+    const matchedTable = availableTables.find((tbl: any) => {
+      const tNum = String(tbl.TableNo || tbl.TableNumber || "").trim().toLowerCase();
+      return tNum === cleanInput;
+    });
+
+    if (!matchedTable) {
+      setTableInputError(`Table ${rawVal} is not found or not available`);
+      return;
+    }
+
+    setTableInputError(null);
+    await handleSelectTableAndContinue(matchedTable);
   };
 
   // User selects a table and continues existing checkout process
@@ -1154,10 +1191,9 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                     ]}
                   />
 
-                  {/* Car Icon with bubbles */}
+                  {/* Category Food Icon */}
                   <View style={styles.catIconWrap}>
-                    <Text style={styles.catIconBubbles}>° °</Text>
-                    <Text style={styles.catIconEmoji}>🚗</Text>
+                    <Text style={styles.catIconEmoji}>🍽️</Text>
                   </View>
 
                   {/* Info: Title & 3 dashed dots */}
@@ -1193,13 +1229,13 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
           {/* Hero Banner matching reference design */}
           <View style={styles.heroBanner}>
             <View style={styles.heroIconCircle}>
-              <Text style={styles.heroCarEmoji}>🚗</Text>
+              <Text style={styles.heroCarEmoji}>🍽️</Text>
             </View>
             <View style={styles.heroTextWrap}>
               <Text style={styles.heroCategoryTitle}>
-                {categories.find((c) => c.CategoryId === activeCategory)?.KitchenTypeName || "Sedan"}
+                {categories.find((c) => c.CategoryId === activeCategory)?.KitchenTypeName || "Delicious Dishes"}
               </Text>
-              <Text style={styles.heroSubtitle}>Choose a package for your vehicle</Text>
+              <Text style={styles.heroSubtitle}>Choose your favourite dishes & beverages</Text>
             </View>
             <TouchableOpacity
               style={styles.heroMoreBtn}
@@ -1297,7 +1333,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                         resizeMode="cover"
                       />
                     ) : (
-                      <Text style={styles.dishEmoji}>🚗</Text>
+                      <Text style={styles.dishEmoji}>🍲</Text>
                     )}
                     {item.IsSoldOut && (
                       <View style={styles.soldOutBadge}>
@@ -1315,7 +1351,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                       {/* Bullet Points Description with Orange Check Mark badge */}
                       <View style={styles.dishBulletsContainer}>
                         {parseDescriptionBullets(
-                          item.Description || "Wash + Vacuum + Tyre Shine"
+                          item.Description || "Freshly prepared • Delicious • High Quality"
                         ).map((bullet, idx) => (
                           <View key={idx} style={styles.dishBulletRow}>
                             <View style={styles.checkBadge}>
@@ -1339,7 +1375,7 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
                 <Text style={styles.emptyDishesText}>
                   {isCategoryPrevious(activeCategory)
                     ? "No previous orders found."
-                    : "No packages in this group."}
+                    : "No items in this group."}
                 </Text>
               </View>
             }
@@ -1507,99 +1543,53 @@ export default function OrderingScreen({ onOrderCompleted, onLogout }: Props) {
               </TouchableOpacity>
             </View>
 
-            {/* ── Section Filter Tabs (Section 1, 2, 3) ── */}
-            <View style={styles.sectionTabsContainer}>
-              {[
-                { id: "ALL", label: "All Tables" },
-                { id: "1", label: "Section 1" },
-                { id: "2", label: "Section 2" },
-                { id: "3", label: "Section 3" },
-              ].map((sec) => {
-                const isActive = selectedSection === sec.id;
-                const count = sec.id === "ALL" 
-                  ? availableTables.length 
-                  : availableTables.filter((t) => String(t.DiningSection).trim() === sec.id).length;
-                return (
-                  <TouchableOpacity
-                    key={sec.id}
-                    style={[styles.sectionTabBtn, isActive && styles.sectionTabBtnActive]}
-                    onPress={() => setSelectedSection(sec.id)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.sectionTabBtnText, isActive && styles.sectionTabBtnTextActive]}>
-                      {sec.label} ({count})
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {loadingTables ? (
-              <View style={styles.tableLoadingContainer}>
-                <ActivityIndicator size="large" color="#f97316" />
-                <Text style={styles.tableLoadingText}>Loading available tables...</Text>
-              </View>
-            ) : availableTables.length === 0 ? (
-              <View style={styles.tableEmptyContainer}>
-                <Text style={styles.tableEmptyText}>No available tables found.</Text>
-                <TouchableOpacity
-                  style={styles.tableContinueAnywayBtn}
-                  onPress={() => {
-                    setShowTableModal(false);
-                    handleProceedToPayment();
+            {/* ── Input Field & Instructions Body (as in reference design) ── */}
+            <View style={styles.tableDirectInputBody}>
+              <View style={[styles.tableDirectInputBox, !!tableInputError && styles.tableDirectInputBoxError]}>
+                <Ionicons name="search-outline" size={24} color="#64748b" style={styles.tableDirectSearchIcon} />
+                <TextInput
+                  style={styles.tableDirectTextInput}
+                  value={inputTableNo}
+                  onChangeText={(text) => {
+                    setInputTableNo(text);
+                    if (tableInputError) setTableInputError(null);
                   }}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.tableContinueAnywayText}>Continue Without Table</Text>
-                </TouchableOpacity>
+                  onSubmitEditing={handleSubmitTableNo}
+                  returnKeyType="done"
+                  keyboardType="numeric"
+                  editable={!loadingTables}
+                  autoFocus={true}
+                  selectTextOnFocus={false}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                {inputTableNo.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      setInputTableNo("");
+                      if (tableInputError) setTableInputError(null);
+                    }}
+                    hitSlop={10}
+                    activeOpacity={0.7}
+                    style={styles.tableDirectClearBtn}
+                  >
+                    <Ionicons name="close-circle" size={22} color="#94a3b8" />
+                  </TouchableOpacity>
+                )}
               </View>
-            ) : (
-              <ScrollView
-                contentContainerStyle={styles.tableGrid}
-                showsVerticalScrollIndicator={false}
-              >
-                {availableTables
-                  .filter((tbl: any) => {
-                    if (selectedSection === "ALL") return true;
-                    return String(tbl.DiningSection).trim() === selectedSection;
-                  })
-                  .map((tbl: any) => {
-                    const tNum = tbl.TableNo || tbl.TableNumber || "";
-                    const sec = tbl.DiningSection ? `Sec ${tbl.DiningSection}` : "";
-                    const isSelected = String(tableNo).trim() === String(tNum).trim();
-                    return (
-                      <TouchableOpacity
-                        key={String(tbl.TableId || tNum)}
-                        style={[
-                          styles.tableCard,
-                          isSelected && styles.tableCardSelected,
-                        ]}
-                        onPress={() => handleSelectTableAndContinue(tbl)}
-                        activeOpacity={0.8}
-                      >
-                        <View style={styles.tableCardTopRow}>
-                          <View style={styles.tableIconWrapper}>
-                            <Text style={styles.tableIcon}>🍽️</Text>
-                          </View>
-                          {sec ? (
-                            <View style={styles.tableSecBadge}>
-                              <Text style={styles.tableSecBadgeText}>{sec}</Text>
-                            </View>
-                          ) : null}
-                        </View>
-                        <Text style={[styles.tableCardNumber, isSelected && styles.tableCardNumberSelected]}>
-                          Table {tNum}
-                        </Text>
-                        {tbl.Seats ? (
-                          <Text style={styles.tableCardSeats}>
-                            {tbl.Seats} Seats
-                          </Text>
-                        ) : null}
-                      </TouchableOpacity>
-                    );
-                  })}
-              </ScrollView>
-            )}
+
+              {tableInputError ? (
+                <View style={styles.tableErrorBadge}>
+                  <Text style={styles.tableErrorBadgeText}>{tableInputError}</Text>
+                </View>
+              ) : (
+                <View style={styles.tableInstructionBadge}>
+                  <Text style={styles.tableInstructionBadgeText}>
+                    Type table number (e.g. 10) and press Enter
+                  </Text>
+                </View>
+              )}
+            </View>
 
             <View style={styles.tableModalFooter}>
               <TouchableOpacity
@@ -3554,163 +3544,90 @@ const styles = StyleSheet.create({
     color: "#475569",
     fontWeight: "700",
   },
-  tableLoadingContainer: {
-    paddingVertical: 60,
+  /* ── DIRECT TABLE NUMBER INPUT (Reference Design) ── */
+  tableDirectInputBody: {
+    paddingHorizontal: 28,
+    paddingTop: 36,
+    paddingBottom: 44,
     alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
   },
-  tableLoadingText: {
-    fontSize: 15,
-    color: "#64748b",
-    fontWeight: "600",
-  },
-  tableEmptyContainer: {
-    paddingVertical: 50,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 24,
-    gap: 16,
-  },
-  tableEmptyText: {
-    fontSize: 16,
-    color: "#64748b",
-    fontWeight: "600",
-    textAlign: "center",
-  },
-  tableContinueAnywayBtn: {
-    backgroundColor: "#f97316",
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  tableContinueAnywayText: {
-    color: "#ffffff",
-    fontWeight: "700",
-    fontSize: 15,
-  },
-  tableGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    padding: 20,
-    gap: 14,
-    justifyContent: "flex-start",
-  },
-  tableCard: {
-    width: "30.5%",
-    minWidth: 105,
-    backgroundColor: "#f8fafc",
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: "#e2e8f0",
-    paddingVertical: 18,
-    paddingHorizontal: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  tableCardSelected: {
-    borderColor: "#f97316",
-    backgroundColor: "#fff7ed",
-  },
-  tableIconWrapper: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#ffffff",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 8,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  tableIcon: {
-    fontSize: 20,
-  },
-  /* ── SECTION FILTER TABS (Section 1, 2, 3) ── */
-  sectionTabsContainer: {
-    flexDirection: "row",
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 4,
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  sectionTabBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#f1f5f9",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  sectionTabBtnActive: {
-    backgroundColor: "#f97316",
-    borderColor: "#f97316",
-  },
-  sectionTabBtnText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#475569",
-  },
-  sectionTabBtnTextActive: {
-    color: "#ffffff",
-  },
-  tableCardTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+  tableDirectInputBox: {
     width: "100%",
-    marginBottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1.5,
+    borderColor: "#cbd5e1",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    height: 56,
   },
-  tableSecBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-    backgroundColor: "#e2e8f0",
+  tableDirectInputBoxError: {
+    borderColor: "#ef4444",
   },
-  tableSecBadgeText: {
-    fontSize: 10,
+  tableDirectSearchIcon: {
+    marginRight: 12,
+  },
+  tableDirectTextInput: {
+    flex: 1,
+    fontSize: 20,
     fontWeight: "700",
-    color: "#475569",
+    color: "#0f172a",
+    paddingVertical: 8,
+    height: "100%",
+    ...(Platform.OS === "web" ? { outlineStyle: "none" as any } : {}),
   },
-  tableCardNumber: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#1e293b",
+  tableDirectClearBtn: {
+    padding: 4,
+    marginLeft: 8,
+  },
+  tableInstructionBadge: {
+    marginTop: 32,
+    backgroundColor: "#fef2f2",
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tableInstructionBadgeText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#b91c1c",
     textAlign: "center",
   },
-  tableCardNumberSelected: {
-    color: "#ea580c",
+  tableErrorBadge: {
+    marginTop: 32,
+    backgroundColor: "#fee2e2",
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#fca5a5",
   },
-  tableCardSeats: {
-    fontSize: 12,
-    color: "#94a3b8",
-    fontWeight: "600",
-    marginTop: 4,
+  tableErrorBadgeText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#dc2626",
+    textAlign: "center",
   },
   tableModalFooter: {
-    paddingHorizontal: 24,
-    paddingVertical: 16,
+    paddingHorizontal: 28,
+    paddingVertical: 18,
     borderTopWidth: 1,
     borderTopColor: "#f1f5f9",
     alignItems: "flex-end",
   },
   tableCancelBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 10,
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 12,
     backgroundColor: "#f1f5f9",
   },
   tableCancelBtnText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "700",
     color: "#475569",
   },

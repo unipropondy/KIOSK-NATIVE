@@ -59,7 +59,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
 
   // Customer Entry Popup State
   const [showCustomerPopup, setShowCustomerPopup] = useState(false);
-  const [selectedService, setSelectedService] = useState<"CAR_WASH" | "DETAILING" | "">("");
+  const [selectedService, setSelectedService] = useState<"DINE_IN" | "TAKEAWAY" | "">("");
   const [carNumber, setCarNumber] = useState("");
   const [customerName, setCustomerName] = useState("");
 
@@ -248,7 +248,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
 
   return (
     <ImageBackground
-      source={require("./assets/images/car_wash_bg.jpg")}
+      source={require("./assets/images/start_page_bg.jpg")}
       style={styles.container}
       resizeMode="cover"
     >
@@ -258,13 +258,13 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
       <View style={[styles.header, isSmallScreen && styles.compactHeader]}>
         <View style={styles.logoRow}>
           <View style={styles.logoCircle}>
-            <Text style={styles.logoCircleText}>🚗</Text>
+            <Text style={styles.logoCircleText}>🍽️</Text>
           </View>
           <View style={styles.brandTextGroup}>
             <Text style={styles.brandTitle}>
-              Red Bay <Text style={styles.brandTitleAccent}>Car Wash</Text>
+              Smart <Text style={styles.brandTitleAccent}>Dining</Text>
             </Text>
-            <Text style={styles.brandSubtitle}>Clean Cars. Happier Journeys.</Text>
+            <Text style={styles.brandSubtitle}>Delicious Food. Exceptional Experience.</Text>
           </View>
         </View>
 
@@ -301,7 +301,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
             </Text>
             <View style={[styles.spark, styles.sparkRight]} />
           </View>
-          <Text style={styles.heroSubtitle}>Clean. Shine. Drive.</Text>
+          <Text style={styles.heroSubtitle}>Fresh. Tasty. Delightful.</Text>
         </View>
 
         {/* Cards Container */}
@@ -311,70 +311,46 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
             isWide || isTablet ? styles.cardsRow : styles.cardsColumn,
           ]}
         >
-          {/* CAR WASH Card */}
+          {/* DINE IN Card */}
           <TouchableOpacity
             style={[
               styles.card,
               isWide ? styles.cardWide : isTablet ? styles.cardTablet : styles.cardMobile,
             ]}
-            onPress={() => {
-              setSelectedService("CAR_WASH");
-              // Reset all customer state fresh on every open
-              setCarNumber("");
-              setCustomerName("");
-              setCustomerData(null);
-              setSelectedCustomer(null);
-              setShowSuggestions(false);
-              setSearchingCustomer(false);
-              searchingRef.current = false;
-              setShowCustomerPopup(true);
-              loadCustomers();
-            }}
+            onPress={() => chooseService("DINE_IN")}
             activeOpacity={0.85}
             disabled={loading}
           >
             <View style={styles.cardIconWrap}>
-              <Text style={styles.cardEmoji}>🧼</Text>
+              <Text style={styles.cardEmoji}>🍽️</Text>
             </View>
-            <Text style={styles.cardTitle}>CAR WASH</Text>
+            <Text style={styles.cardTitle}>DINE IN</Text>
             <View style={styles.cardDivider} />
             <Text style={styles.cardDescription}>
-              Give your car{"\n"}a fresh clean
+              Enjoy your meal{"\n"}at our restaurant
             </Text>
             <View style={styles.cardArrowBtn}>
               <Text style={styles.arrowText}>→</Text>
             </View>
           </TouchableOpacity>
 
-          {/* DETAILING Card */}
+          {/* TAKEAWAY Card */}
           <TouchableOpacity
             style={[
               styles.card,
               isWide ? styles.cardWide : isTablet ? styles.cardTablet : styles.cardMobile,
             ]}
-            onPress={() => {
-              setSelectedService("DETAILING");
-              // Reset all customer state fresh on every open
-              setCarNumber("");
-              setCustomerName("");
-              setCustomerData(null);
-              setSelectedCustomer(null);
-              setShowSuggestions(false);
-              setSearchingCustomer(false);
-              searchingRef.current = false;
-              setShowCustomerPopup(true);
-              loadCustomers();
-            }}
+            onPress={() => chooseService("TAKEAWAY")}
             activeOpacity={0.85}
             disabled={loading}
           >
             <View style={styles.cardIconWrap}>
-              <Text style={styles.cardEmoji}>✨</Text>
+              <Text style={styles.cardEmoji}>🥡</Text>
             </View>
-            <Text style={styles.cardTitle}>DETAILING</Text>
+            <Text style={styles.cardTitle}>TAKEAWAY</Text>
             <View style={styles.cardDivider} />
             <Text style={styles.cardDescription}>
-              Premium care{"\n"}for your car
+              Packed & ready{"\n"}to take home
             </Text>
             <View style={styles.cardArrowBtn}>
               <Text style={styles.arrowText}>→</Text>
@@ -394,7 +370,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
       <View style={styles.footer}>
         <Animated.View style={[styles.footerContent, { opacity: pulseAnim }]}>
           <Text style={styles.handIcon}>👆</Text>
-          <Text style={styles.footerText}>Tap to start your service</Text>
+          <Text style={styles.footerText}>Tap to start your order</Text>
         </Animated.View>
       </View>
 
@@ -420,9 +396,9 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
               bounces={false}
               contentContainerStyle={styles.customerPopupScroll}
             >
-              <Text style={styles.popupTitle}>Customer Entry</Text>
+              <Text style={styles.popupTitle}>Customer / Table Info</Text>
 
-              <Text style={styles.inputLabel}>Car Number</Text>
+              <Text style={styles.inputLabel}>Mobile / ID / Car Plate</Text>
               <View style={styles.carInputContainer}>
                 <View style={styles.carInputRow}>
                   <TextInput
@@ -443,7 +419,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
                         setShowSuggestions(true);
                       }
                     }}
-                    placeholder="Enter car number"
+                    placeholder="Enter identifier / mobile"
                     placeholderTextColor="#9ca3af"
                     autoCapitalize="characters"
                   />
@@ -510,7 +486,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
                 onPress={async () => {
                   const cleanCar = carNumber.trim().toUpperCase();
                   if (!cleanCar) {
-                    showAlert("Required", "Please enter car number");
+                    showAlert("Required", "Please enter customer identifier");
                     return;
                   }
 
@@ -591,7 +567,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
               style={styles.popupSearchInput}
               value={popupSearch}
               onChangeText={(val) => setPopupSearch(val.toUpperCase())}
-              placeholder="Search by car number..."
+              placeholder="Search by name or number..."
               placeholderTextColor="#9ca3af"
               autoCapitalize="characters"
               autoFocus
@@ -599,7 +575,7 @@ export default function KioskStartPage({ onStart, onBackToLogin }: Props) {
 
             <View style={styles.tableHeader}>
               <Text style={styles.tableHeaderText}>Customer Name</Text>
-              <Text style={styles.tableHeaderText}>Car Number</Text>
+              <Text style={styles.tableHeaderText}>Identifier</Text>
             </View>
 
             {filteredCustomers.length === 0 ? (

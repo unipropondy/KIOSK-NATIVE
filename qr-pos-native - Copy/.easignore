@@ -1,0 +1,7 @@
+# Ignore backend and local logs/utilities from EAS build archive
+backend/
+bridge_extracted/
+bridge_temp/
+*.log
+poller.js
+run_bridge.js

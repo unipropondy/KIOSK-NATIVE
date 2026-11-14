@@ -401,7 +401,7 @@ export default function LoginPage({ onLoginSuccess }: Props) {
 
   return (
     <ImageBackground
-      source={require("./assets/images/car_wash_bg.jpg")}
+      source={require("./assets/images/start_page_bg.jpg")}
       style={styles.background}
       resizeMode="cover"
     >
@@ -448,18 +448,13 @@ export default function LoginPage({ onLoginSuccess }: Props) {
                 },
               ]}
             >
-              <View style={styles.carIcon}>
-                <View style={styles.carRoof} />
-                <View style={styles.carBody} />
-                <View style={[styles.carWheel, styles.leftCarWheel]} />
-                <View style={[styles.carWheel, styles.rightCarWheel]} />
-              </View>
+              <Text style={styles.restaurantLogoEmoji}>🍽️</Text>
             </View>
 
             <Text style={[styles.brand, { fontSize: brandFontSize }]}>
-              RED BAY CAR <Text style={styles.brandAccent}>Wash</Text>
+              SMART <Text style={styles.brandAccent}>DINING</Text>
             </Text>
-            <Text style={styles.subtitle}>Unipro</Text>
+            <Text style={styles.subtitle}>Restaurant & Cafe Kiosk</Text>
 
             <View
               style={[
@@ -842,42 +837,9 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 4,
   },
-  carIcon: {
-    width: 40,
-    height: 29,
-    justifyContent: "flex-end",
-    alignItems: "center",
+  restaurantLogoEmoji: {
+    fontSize: 42,
   },
-  carRoof: {
-    position: "absolute",
-    top: 2,
-    width: 21,
-    height: 11,
-    borderColor: "#ffffff",
-    borderWidth: 2,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: 8,
-    borderTopRightRadius: 8,
-  },
-  carBody: {
-    width: 36,
-    height: 13,
-    borderColor: "#ffffff",
-    borderWidth: 2,
-    borderRadius: 6,
-  },
-  carWheel: {
-    position: "absolute",
-    bottom: 0,
-    width: 8,
-    height: 8,
-    borderColor: "#ffffff",
-    borderWidth: 2,
-    borderRadius: 4,
-    backgroundColor: "#ff5722",
-  },
-  leftCarWheel: { left: 5 },
-  rightCarWheel: { right: 5 },
   brand: {
     textAlign: "center",
     fontSize: 38,
